@@ -49,6 +49,9 @@ window.__ModuleLoader__.load({
         'editor.forceSave': '强制保存',
         'editor.reloadConfirm': '放弃未保存的修改并重新加载？',
         'editor.forceConfirm': '强制保存会覆盖磁盘上的外部修改，继续？',
+        'editor.autoOn': '自动编译',
+        'editor.autoOff': '手动编译',
+        'editor.autoHint': '停止输入后自动保存并编译',
         'editor.lines': '行',
         'header.title': 'LaTeX 工作台',
         'action.compile': '编译',
@@ -147,6 +150,9 @@ window.__ModuleLoader__.load({
         'editor.forceSave': 'Force save',
         'editor.reloadConfirm': 'Discard unsaved changes and reload?',
         'editor.forceConfirm': 'Force save will overwrite the external change. Continue?',
+        'editor.autoOn': 'Auto compile',
+        'editor.autoOff': 'Manual compile',
+        'editor.autoHint': 'Save and compile after typing stops',
         'editor.lines': 'lines',
         'header.title': 'LaTeX Workbench',
         'action.compile': 'Compile',
@@ -752,6 +758,7 @@ window.__ModuleLoader__.load({
 .dl-editor-path { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; font-size:12px; }
 .dl-editor-dirty { color:var(--dsw-alias-state-warn-primary); font-size:11px; }
 .dl-editor-status { color:var(--dsw-alias-label-secondary); font-size:11px; white-space:nowrap; }
+.dl-editor-auto { color:var(--dsw-alias-label-secondary); font-size:10.5px; white-space:nowrap; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; padding:1px 6px; }
 .dl-editor-status.ok { color:var(--dsw-alias-state-success-primary); }
 .dl-editor-status.bad { color:var(--dsw-alias-state-error-primary); }
 .dl-editor-body { flex:1 1 auto; min-height:0; display:flex; overflow:hidden; background:var(--dsw-alias-bg-base); }
@@ -1395,6 +1402,9 @@ window.__ModuleLoader__.load({
       const parsed = useMemo(() => parseFileAddress(address), [address]);
       const filePath = useMemo(() => resolveAddressPath(parsed, cwd), [parsed, cwd]);
       const displayName = basenameOfAddress(address) || filePath || '';
+      const snapshot = useSnapshot();
+      const autoSave = snapshot?.config?.editorAutoSave !== false;
+      const autoSaveDelayMs = Number(snapshot?.config?.editorAutoSaveDelayMs) || 900;
 
       const [content, setContent] = useState('');
       const [draft, setDraft] = useState('');
@@ -1523,6 +1533,18 @@ window.__ModuleLoader__.load({
         [draft, revision, filePath, cwd, sessionId],
       );
 
+      // Debounced auto-save: after the user stops typing, write and compile
+      // without requiring Ctrl+S. The manual save path is unchanged and still
+      // runs immediately. Conflicts/errors stop the loop until the user acts.
+      useEffect(() => {
+        if (!autoSave || !filePath || !dirty) return undefined;
+        if (busy || phase === 'loading' || phase === 'conflict' || phase === 'error') return undefined;
+        const timer = window.setTimeout(() => {
+          save({ auto: true });
+        }, autoSaveDelayMs);
+        return () => window.clearTimeout(timer);
+      }, [autoSave, autoSaveDelayMs, dirty, draft, phase, busy, filePath, save]);
+
       const reload = useCallback(() => {
         if (dirty && typeof window !== 'undefined' && !window.confirm(tRef.current('editor.reloadConfirm'))) return;
         load();
@@ -1619,6 +1641,14 @@ window.__ModuleLoader__.load({
           dirty ? h('span', { className: 'dl-editor-dirty' }, t('editor.dirty')) : null,
           h('span', { className: 'dl-head-spacer' }),
           h('span', { className: `dl-editor-status ${statusTone}` }, statusText),
+          h(
+            'span',
+            {
+              className: 'dl-editor-auto',
+              title: `${t('editor.autoHint')} · ${autoSaveDelayMs} ms`,
+            },
+            autoSave ? t('editor.autoOn') : t('editor.autoOff'),
+          ),
           h(
             'button',
             {

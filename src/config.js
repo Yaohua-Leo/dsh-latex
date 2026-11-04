@@ -43,6 +43,8 @@ export function defaultConfig() {
     respectLatexmkrc: true,
     allowProjectLatexmkrc: true,
     allowShellEscape: false,
+    editorAutoSave: true,
+    editorAutoSaveDelayMs: 900,
     keepBuildLogTail: 1_048_576,
     watchExtraExtensions: [],
   };
@@ -126,6 +128,13 @@ export function normalizeConfig(raw) {
     allowProjectLatexmkrc: bool(source.allowProjectLatexmkrc, defaults.allowProjectLatexmkrc),
     // `-no-shell-escape` is passed unless a project explicitly opts in.
     allowShellEscape: bool(source.allowShellEscape, defaults.allowShellEscape),
+    editorAutoSave: bool(source.editorAutoSave, defaults.editorAutoSave),
+    editorAutoSaveDelayMs: integer(
+      source.editorAutoSaveDelayMs,
+      defaults.editorAutoSaveDelayMs,
+      300,
+      10_000,
+    ),
     keepBuildLogTail: integer(source.keepBuildLogTail, defaults.keepBuildLogTail, 65_536, 8_388_608),
     watchExtraExtensions: stringList(source.watchExtraExtensions, 32).map((entry) =>
       entry.startsWith('.') ? entry.toLowerCase() : `.${entry.toLowerCase()}`,
@@ -149,5 +158,7 @@ export function publicConfig(config) {
     maxConcurrentBuilds: config.maxConcurrentBuilds,
     allowProjectLatexmkrc: config.allowProjectLatexmkrc,
     allowShellEscape: config.allowShellEscape,
+    editorAutoSave: config.editorAutoSave,
+    editorAutoSaveDelayMs: config.editorAutoSaveDelayMs,
   };
 }

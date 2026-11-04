@@ -4,6 +4,21 @@ All notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 semantic versioning.
 
+## [0.3.0] - 2026-11-04
+
+### Added
+
+- Debounced **auto-save and auto-compile** in the TeX editor: after typing stops
+  (default 900 ms), the source is written and built without Ctrl+S. The status
+  pill shows whether auto or manual compile is active.
+- `editorAutoSave` and `editorAutoSaveDelayMs` config keys; auto-save stops on
+  a conflict or I/O error and never creates duplicate builds for one write.
+
+### Changed
+
+- The editor's toolbar status now distinguishes automatic and manual compile
+  modes.
+
 ## [0.2.0] - 2026-11-04
 
 ### Added

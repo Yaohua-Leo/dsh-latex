@@ -10,6 +10,11 @@
 > （extension 优先级、`canOpen` 仅 `.tex`，直接取代内建只读预览）、`GET/POST /latex/file` 安全读写
 > （原子写 + revision CAS）与 `/latex/action {action:"compile-file"}`（解析真实主文档并构建，reason=`editor`）。
 > 保存后已打开的 PDF 预览经 SSE 自动刷新。验收与截图见 `docs/acceptance.md` 附录 M。
+>
+> **更新（2026-11-04，v0.3.0）**：编辑器在停止输入约 900 ms 后自动保存并构建
+> （`editorAutoSave`、`editorAutoSaveDelayMs`）；仍然可以 Ctrl+S / 三角按钮立即构建。
+> 自动保存复用同一条 `POST /latex/file` → `compile-file` 路径，冲突/错误会停止自动循环。
+> 详见 `docs/acceptance.md` 附录 N。
 
 本文档描述 `D:\deepseekharness\latex-plugin`（包名 `dsh-latex`，v0.2.0；下文 sample 输出来自 v0.1 的历史运行）的**真实实现**：
 模块划分、三条入口如何共用同一个服务对象、项目识别、构建状态机、last-good 发布、自动构建、
