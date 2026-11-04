@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "LaTeX",
+    "description": "Compile local TeX Live projects with latexmk, inspect structured diagnostics, and preview the PDF inside DeepSeek Harness."
+  }
+}

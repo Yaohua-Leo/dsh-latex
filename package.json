@@ -1,0 +1,69 @@
+{
+  "name": "dsh-latex",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Native DeepSeek Harness LaTeX workspace: edit .tex files in an in-app editor, compile local TeX Live projects with latexmk, and keep a live PDF preview refreshed on save.",
+  "author": "Yaohua-Leo",
+  "license": "MIT",
+  "icon": "./icon.svg",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yaohua-Leo/dsh-latex.git"
+  },
+  "homepage": "https://github.com/Yaohua-Leo/dsh-latex#readme",
+  "bugs": {
+    "url": "https://github.com/Yaohua-Leo/dsh-latex/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "latex",
+    "texlive",
+    "latexmk",
+    "pdf",
+    "editor"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node scripts/check.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src",
+    "assets/pdf.min.mjs",
+    "assets/pdf.worker.min.mjs",
+    "assets/licenses",
+    "assets/icon-180.png",
+    "locale/*.json",
+    "icon.svg",
+    "cordis.patch.yml",
+    "screenshots.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-theme"
+      ]
+    }
+  }
+}

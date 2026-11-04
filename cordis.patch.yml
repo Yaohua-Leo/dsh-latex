@@ -1,0 +1,53 @@
+# dsh-latex bundle patch: the Host half of the LaTeX workspace.
+#
+# The `latex` row mounts index.js (apply) with the user-tunable config below.
+# The browser half is auto-discovered from package.json's `dsh.client`
+# declaration; the Host serves `client.js` through the plugin bundle route.
+#
+# Every field here can be overridden at the profile level, e.g.
+#   - override:
+#       - id: latex
+#         config:
+#           engine: lualatex
+- insert:
+    - id: latex
+      name: dsh-latex
+      config:
+        # Directory holding latexmk.exe, xelatex.exe, ... Leave empty to
+        # discover latexmk from PATH (or DSH_LATEX_TEX_BIN).
+        texBinDir: ''
+        # Empty -> <texBinDir>\latexmk.exe
+        latexmkPath: ''
+        # Default engine: xelatex | pdflatex | lualatex
+        engine: xelatex
+        # Build directory, relative to the project root (main .tex directory).
+        buildDir: build
+        # Watch project sources and rebuild after saves.
+        autoBuild: true
+        # Quiet period after the last change before a build starts.
+        debounceMs: 800
+        # Hard build timeout.
+        timeoutMs: 180000
+        # Keep the last successfully built PDF as the preview source.
+        preserveLastGood: true
+        # Auto-open the in-app preview after a successful explicit build.
+        autoOpenPreview: true
+        # 'native' (the plugin's PDF.js tab) or 'document' (DSH document preview).
+        previewSurface: native
+        # Entry allowlist for project main files (NOT a filesystem sandbox).
+        # Empty = any local project root; UNC/network paths are always rejected.
+        allowedRoots: []
+        # Extra latexmk arguments appended verbatim (never shell-interpreted).
+        extraLatexmkArgs: []
+        # Maximum number of builds running at the same time (all projects).
+        maxConcurrentBuilds: 2
+        # Project rc files are executable Perl; true honours the project's own
+        # recipe (never rewritten), false passes -norc. See README Security.
+        allowProjectLatexmkrc: true
+        # With a project rc present, do not force the configured engine flag.
+        respectLatexmkrc: true
+        # false -> pass -no-shell-escape (recommended); true lets TeX use
+        # \write18, which means allowing project-controlled commands.
+        allowShellEscape: false
+        # max_print_line for the TeX child; fewer wrapped log diagnostics.
+        maxPrintLine: 2000

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "LaTeX",
+    "description": "在本机 TeX Live 上编译 LaTeX 项目，查看结构化编译诊断，并在 DeepSeek Harness 内实时预览 PDF。"
+  }
+}

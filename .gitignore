@@ -1,0 +1,19 @@
+# Dependencies and generated artifacts
+node_modules/
+*.tgz
+
+# Build output produced by the plugin (latexml/TeX artifacts)
+build/
+examples/**/build/
+
+# Local screenshots and raw environment logs are development evidence, not
+# part of the public repository.
+docs/evidence/
+docs/env-audit-logs/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.dsh-ops-update-*.lock
