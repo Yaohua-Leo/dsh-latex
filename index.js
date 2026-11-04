@@ -17,7 +17,7 @@ import { LatexService } from './src/service.js';
 import { registerLatexTools } from './src/tools.js';
 
 export const name = 'dsh-latex';
-export const version = '0.2.0';
+export const version = '0.3.0';
 
 /**
  * Wire one optional Host service once it exists. Cordis may start plugins in

@@ -49,5 +49,10 @@
         # false -> pass -no-shell-escape (recommended); true lets TeX use
         # \write18, which means allowing project-controlled commands.
         allowShellEscape: false
+        # Save + compile after the user stops typing in the editor. Set false
+        # to require Ctrl+S / the triangle button.
+        editorAutoSave: true
+        # Quiet window for auto-save, in milliseconds (300..10000).
+        editorAutoSaveDelayMs: 900
         # max_print_line for the TeX child; fewer wrapped log diagnostics.
         maxPrintLine: 2000

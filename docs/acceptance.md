@@ -753,3 +753,32 @@ powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \
 - `.tex` 不再显示内建只读预览，也没有只读模式；查看原始文件可用编辑器本身。
 - 只支持 UTF-8 `.tex`，最大 4 MiB，不能新建文件/目录；写文件 API 只服务编辑器。
 - 失败 UI 与冲突 UI 已分别做像素级触发（见 M2）；CJK 文件名编辑、非 `.tex` 回落和重启后编辑器 tab 的恢复未做像素级复验。
+
+---
+
+## 附录 N（v0.3.0，2026-11-04）：停止输入后自动保存 + 自动编译
+
+### N1 实现
+
+- 编辑器在 `draft !== content`（脏）时启动一个 `editorAutoSaveDelayMs`（默认 900 ms）的防抖计时器；
+  计时器触发时走与手动保存完全相同的 `POST /latex/file` → `compile-file` 路径，成功后 SSE 刷新已打开的 PDF 预览。
+- 自动保存只在以下条件满足时运行：`editorAutoSave` 为 true、文件路径可解析、没有正在进行的保存/构建、
+  不处于 loading/conflict/error 状态。冲突/错误会停止自动循环，保留手动「重新加载 / 强制保存」路径。
+- 自动保存不会在每次按键时启动构建；手动 Ctrl+S / 三角按钮仍立即构建。Host 端对 `reason=editor`
+  的构建有 watcher 抑制，避免同一次写入产生重复构建。
+- 配置：`editorAutoSave`（默认 true）、`editorAutoSaveDelayMs`（默认 900，范围 300–10000）。
+
+### N2 验证
+
+| 项 | 结果 |
+| --- | --- |
+| `npm test`（含新增 `test/config.test.mjs`） | **PASS**：7 tests / 0 fail，覆盖自动保存默认值、关闭开关和延迟上下界 |
+| `npm run check` | **PASS**（全部 Host/Client 源文件语法检查） |
+| 真实 UI 自动保存 | 实现已通过代码审查；本轮未做像素级自动计时触发（避免接管桌面会话），因此不记为 PASS |
+| 手动保存/构建/预览刷新 | v0.2.0 的真实 UI 证据仍有效（附录 M）；自动保存复用同一条路径 |
+
+### N3 风险
+
+- 900 ms 停顿即触发构建；对超大文档或频繁停顿时可能产生较多构建，可调大 `editorAutoSaveDelayMs`
+  或设置 `editorAutoSave: false`。
+- 自动保存不会绕过 revision CAS；外部编辑后保存会显示冲突并停止自动循环。

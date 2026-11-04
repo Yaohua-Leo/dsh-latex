@@ -1105,7 +1105,7 @@ export class LatexService {
     return {
       ok: true,
       name: 'dsh-latex',
-      version: '0.2.0',
+      version: '0.3.0',
       pid: process.pid,
       startedAt: this.startedAt,
       projects: this.projects.size,

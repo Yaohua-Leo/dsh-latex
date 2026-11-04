@@ -22,9 +22,10 @@ dependencies are required.
   claims it with an extension-priority tab type, so DSH opens the plugin's
   line-numbered editor instead of the read-only document preview. Chapter files
   resolve to their real main document on save.
-- **Save = compile = refresh.** The triangle button (or Ctrl+S) atomically writes
-  the source and runs `latexmk`; an open PDF preview updates through DSH's SSE
-  state stream. The first successful save opens a preview if none is open.
+- **Save = compile = refresh.** The triangle button (or Ctrl+S) runs immediately;
+  by default the editor also **auto-saves and compiles after you stop typing**
+  (900 ms debounce, configurable). An open PDF preview updates through DSH's
+  SSE state stream; the first successful save opens one if none is open.
 - **Structured diagnostics.** Failures show the error count and the first
   `file:line` message in the editor; `latex_get_diagnostics` and
   `latex_get_status` return the full structured result to the agent.
@@ -104,7 +105,9 @@ action=set_bundle target=dsh-latex enabled=false` or `action=remove_bundle`.
 
 1. Open a `.tex` file from the right-sidebar file tree (or double-click a PDF to
    jump to its source line). The **TeX editor** tab opens directly.
-2. Edit the source and click the **triangle save button** or press **Ctrl+S**.
+2. Edit the source. After you pause for about a second the editor **auto-saves
+   and compiles**; the triangle button / **Ctrl+S** is still available when you
+   want an immediate build.
 3. The Host resolves the main document, runs `latexmk`, and publishes the PDF.
    The **PDF 预览** tab shows the new build, or opens automatically on the first
    successful save.
@@ -151,6 +154,8 @@ layer, for example:
 | `respectLatexmkrc` | `true` | With a project `.latexmkrc`, do not force the configured engine flag. |
 | `allowProjectLatexmkrc` | `true` | Honour project/user rc files. Set `false` to pass `-norc`. |
 | `allowShellEscape` | `false` | When false, pass `-no-shell-escape`; `\write18` must be explicitly enabled. |
+| `editorAutoSave` | `true` | Save and compile automatically after typing stops. Disable to require the triangle button / Ctrl+S. |
+| `editorAutoSaveDelayMs` | `900` | Quiet window for auto-save in milliseconds (300–10000). |
 | `maxPrintLine` | `2000` | `max_print_line` for the TeX child; reduces wrapped log lines. |
 
 `DSH_LATEX_TEX_BIN` is an environment-variable fallback for `texBinDir`; an
@@ -214,8 +219,9 @@ permissions. The full threat model and reporting process are in
 ## Limitations
 
 - The editor is a plain `<textarea>` plus line numbers: no syntax highlighting,
-  autocomplete, multi-cursor or automatic save. Ctrl+S / the triangle button is
-  the only compile trigger.
+  autocomplete or multi-cursor. Auto-save is debounced and can be disabled with
+  `editorAutoSave: false`; the triangle button and Ctrl+S always build
+  immediately.
 - Closing an editor tab discards unsaved text; switching tabs does not
   (`keepMounted`).
 - Only UTF-8 `.tex` files up to 4 MiB can be edited; new files and directories

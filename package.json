@@ -1,6 +1,6 @@
 {
   "name": "dsh-latex",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Native DeepSeek Harness LaTeX workspace: edit .tex files in an in-app editor, compile local TeX Live projects with latexmk, and keep a live PDF preview refreshed on save.",
   "author": "Yaohua-Leo",
