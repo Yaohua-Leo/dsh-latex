@@ -4,6 +4,12 @@ All notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- A DVI-only `latexmk` run (for example a project `.latexmkrc` with `$pdf_mode = 0`) no longer reports success or publishes a stale PDF left in `build/`; failed builds also stop printing a stale `pdf:` line.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added

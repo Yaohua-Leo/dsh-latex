@@ -63,6 +63,90 @@ const ENGINE_ARGS = Object.freeze({
   lualatex: '-pdflua',
 });
 
+/** How far a PDF's mtime may precede the build start and still count as fresh. */
+const PDF_FRESH_SLACK_MS = 2_000;
+
+/**
+ * Parse latexmk's success summary lines:
+ *
+ *   Latexmk: All targets (build/main.xdv build/main.pdf) are up-to-date
+ *
+ * A DVI-only build prints `(build/main.dvi)` here; that line must never count
+ * as PDF evidence, because an older PDF may still sit in the build directory.
+ *
+ * @param {string} output combined child stdout/stderr
+ * @returns {{ targets: string[], text: string }}
+ */
+function parseUpToDateTargets(output) {
+  const targets = [];
+  let text = '';
+  const pattern = /Latexmk:\s+All targets\s+\(([^)]*)\)\s+are up-to-date/gi;
+  for (const match of String(output ?? '').matchAll(pattern)) {
+    const list = match[1].trim();
+    if (list === '') continue;
+    text += ` ${list} `;
+    for (const token of list.match(/"[^"]+"|'[^']+'|\S+/g) ?? []) {
+      const value = token.replace(/^["']|["']$/g, '').trim();
+      if (value !== '') targets.push(value);
+    }
+  }
+  return { targets, text };
+}
+
+/** Normalize a path for comparison (case-insensitive on Windows). */
+function pathKey(value) {
+  const normalized = path.resolve(value).replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function samePath(left, right) {
+  return pathKey(left) === pathKey(right);
+}
+
+/**
+ * PDF files the up-to-date summary explicitly names, restricted to the build
+ * directory. The expected `<stem>.pdf` is also accepted when the summary names
+ * its relative path, which keeps paths containing spaces working even though
+ * the target list itself is space-separated.
+ *
+ * @param {{ pdfPath: string, buildDirAbs: string }} paths
+ * @param {{ targets: string[], text: string }} summary
+ * @param {string} rootDir
+ * @returns {string[]} absolute candidate PDF paths
+ */
+function upToDatePdfPaths(paths, summary, rootDir) {
+  const candidates = [];
+  const add = (value) => {
+    const absolute = path.isAbsolute(value) ? path.normalize(value) : path.resolve(rootDir, value);
+    if (!isInside(paths.buildDirAbs, absolute)) return;
+    if (!candidates.some((candidate) => samePath(candidate, absolute))) candidates.push(absolute);
+  };
+  for (const target of summary.targets) {
+    if (/\.pdf$/i.test(target)) add(target);
+  }
+  const expectedRelative = path.relative(rootDir, paths.pdfPath).replace(/\\/g, '/');
+  const summaryText = summary.text.replace(/\\/g, '/');
+  const expectedNamed =
+    process.platform === 'win32'
+      ? summaryText.toLowerCase().includes(expectedRelative.toLowerCase())
+      : summaryText.includes(expectedRelative);
+  if (expectedNamed) add(paths.pdfPath);
+  return candidates;
+}
+
+/** Resolve `Output written on ...pdf` to an absolute path, or undefined. */
+function logOutputPdfPath(raw, rootDir) {
+  if (typeof raw !== 'string') return undefined;
+  const value = raw
+    .trim()
+    .replace(/^\((?:\.\/|\.\\)/, '')
+    .replace(/^\(/, '')
+    .replace(/["']/g, '')
+    .trim();
+  if (!/\.pdf$/i.test(value)) return undefined;
+  return path.isAbsolute(value) ? path.normalize(value) : path.resolve(rootDir, value);
+}
+
 function suffixOf(name) {
   const lower = name.toLowerCase();
   if (lower.endsWith('.run.xml')) return '.run.xml';
@@ -358,19 +442,25 @@ export class LatexBuilder {
       parsed.counts.warnings = parsed.warnings.length;
     }
 
-    const pdfFound = await this.#findOutputPdf(paths);
-    const pdfStat = pdfFound ? await stat(pdfFound).catch(() => undefined) : undefined;
     const combinedOutput = `${stdoutText}\n${stderrText}`;
     // A project .latexmkrc without `$pdf_mode` makes latexmk fall back to DVI
-    // mode: it exits 0 and may leave an UNRELATED older PDF in the build
-    // directory. Require evidence that this run produced the PDF (or that
-    // latexmk explicitly declared the existing targets up to date).
-    const upToDate =
-      /all targets .*are up-to-date/i.test(combinedOutput) ||
-      /nothing to do/i.test(combinedOutput);
-    const pdfFresh = Boolean(pdfStat && pdfStat.mtimeMs >= startedAt - 2_000);
-    const pdfOutput = Boolean(parsed.outputFile && /\.pdf"?\s*$/i.test(parsed.outputFile.trim()));
-    const freshEvidence = upToDate || pdfFresh || pdfOutput;
+    // mode: it exits 0 and leaves the old PDF in the build directory untouched.
+    // Only trust a PDF that this run actually produced (fresh mtime) or that
+    // latexmk explicitly named as an up-to-date PDF target. latexmk prints
+    // "All targets (...) are up-to-date" after every successful run, so the
+    // target list itself is what distinguishes PDF mode from DVI mode.
+    const summary = parseUpToDateTargets(combinedOutput);
+    const upToDatePdfs = upToDatePdfPaths(paths, summary, project.rootDir);
+    const logPdf = logOutputPdfPath(parsed.outputFile, project.rootDir);
+    const preferredPdfs = [...upToDatePdfs];
+    if (logPdf && isInside(paths.buildDirAbs, logPdf)) preferredPdfs.push(logPdf);
+    const pdfFound = await this.#findOutputPdf(paths, preferredPdfs);
+    const pdfStat = pdfFound ? await stat(pdfFound).catch(() => undefined) : undefined;
+    const pdfTargetUpToDate = Boolean(
+      pdfFound && upToDatePdfs.some((candidate) => samePath(candidate, pdfFound)),
+    );
+    const pdfFresh = Boolean(pdfStat && pdfStat.mtimeMs >= startedAt - PDF_FRESH_SLACK_MS);
+    const freshEvidence = pdfTargetUpToDate || pdfFresh;
     let status;
     let statusError;
     if (cancelled) {
@@ -383,8 +473,8 @@ export class LatexBuilder {
       } else {
         status = 'failure';
         statusError = rcPath
-          ? 'latexmk exited 0 but produced no fresh PDF. The project .latexmkrc may not select PDF mode (missing $pdf_mode); pass an engine explicitly or fix the rc file.'
-          : 'latexmk exited 0 but the log contains no fresh PDF output; the build produced no usable document.';
+          ? 'latexmk exited 0 but did not produce or declare a fresh PDF. The project .latexmkrc may select DVI mode (for example $pdf_mode = 0); pass an engine explicitly or fix the rc file.'
+          : 'latexmk exited 0 but did not produce a fresh PDF; the build produced no usable document.';
       }
     } else {
       status = 'failure';
@@ -443,14 +533,16 @@ export class LatexBuilder {
     return {
       status,
       error: statusError,
-      upToDate,
+      upToDate: pdfTargetUpToDate,
       freshOutput: freshEvidence,
       exitCode: outcome?.exitCode ?? null,
       signal: outcome?.signal ?? null,
       durationMs,
       engine,
       args,
-      pdfPath: pdfFound,
+      // A stale PDF found in the build directory is not this build's output;
+      // only expose it when the build was actually accepted as a success.
+      pdfPath: status === 'success' ? pdfFound : undefined,
       previewPath,
       version,
       pages: parsed.pages,
@@ -549,10 +641,28 @@ export class LatexBuilder {
     }
   }
 
-  /** Find the produced PDF, tolerating a project that changes its jobname. */
-  async #findOutputPdf(paths) {
-    const direct = await stat(paths.pdfPath).catch(() => undefined);
-    if (direct?.isFile()) return paths.pdfPath;
+  /**
+   * Find the produced PDF.
+   *
+   * Paths named by latexmk's own output (up-to-date target list / "Output
+   * written on ...pdf") are authoritative and win over a stale expected path.
+   * Otherwise the direct `<stem>.pdf` is preferred, then the uniquely newest
+   * PDF in the build directory (tolerating a project that changes its jobname).
+   *
+   * @param {{ pdfPath: string, buildDirAbs: string }} paths
+   * @param {string[]} [preferred] absolute PDF paths named by latexmk
+   */
+  async #findOutputPdf(paths, preferred = []) {
+    const existingFile = async (file) => {
+      const info = await stat(file).catch(() => undefined);
+      return info?.isFile() ? file : undefined;
+    };
+    for (const candidate of preferred) {
+      const found = await existingFile(candidate);
+      if (found) return found;
+    }
+    const direct = await existingFile(paths.pdfPath);
+    if (direct) return direct;
     let entries;
     try {
       entries = await readdir(paths.buildDirAbs, { withFileTypes: true });

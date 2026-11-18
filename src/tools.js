@@ -28,7 +28,7 @@ function diagnosticLine(item, rootDir) {
   return `- ${location}: ${item.message}${item.hint ? ` (${item.hint})` : ''}`;
 }
 
-function formatResult(result, { includeWarnings = true, maxErrors = 25 } = {}) {
+export function formatResult(result, { includeWarnings = true, maxErrors = 25 } = {}) {
   const diagnostics = result.diagnostics ?? { errors: [], warnings: [], counts: { errors: 0, warnings: 0 } };
   const lines = [];
   const statusWord = String(result.status ?? 'unknown').toUpperCase();
@@ -40,7 +40,11 @@ function formatResult(result, { includeWarnings = true, maxErrors = 25 } = {}) {
       result.exitCode ?? '-'
     }`,
   );
-  if (result.pdfPath) lines.push(`pdf: ${result.pdfPath}${result.pages ? ` (${result.pages} pages)` : ''}`);
+  // A failed/timeout/cancelled build may still have an older successful PDF in
+  // the build directory; never present it as this build's output.
+  if (result.status === 'success' && result.pdfPath) {
+    lines.push(`pdf: ${result.pdfPath}${result.pages ? ` (${result.pages} pages)` : ''}`);
+  }
   if (result.previewPath) lines.push(`preview: ${result.previewPath} | version: ${result.previewVersion ?? '-'}`);
   if (result.logPath) lines.push(`log: ${result.logPath}`);
   if (result.rcFile) lines.push(`latexmkrc: ${result.rcFile} (project configuration respected)`);
