@@ -310,26 +310,41 @@ test('cancel aborts an in-flight download and removes partial files', async (t) 
   assert.equal(status.state, 'cancelled');
   assert.deepEqual(await readdir(path.join(dir, 'tmp')), []);
   assert.equal(existsSync(path.join(dir, 'bin')), false);
+  // Close the gated response body so Node 22's test runner does not keep a
+  // pending ReadableStream promise alive and cancel the following subtests.
+  gate.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test('the hard timeout fails the install and cleans partial files', async (t) => {
   const dir = await tempDir(t);
   const bytes = Buffer.from('y'.repeat(4_096));
+  const gate = deferred();
   const { installer } = makeInstaller(dir, {
-    fetchImpl: async () => gatedResponse(bytes, deferred()),
+    fetchImpl: async () => gatedResponse(bytes, gate),
     extractImpl: mockExtractor(),
   });
 
-  const result = await installer.install({
-    url: 'https://example.test/TinyTeX-1.tar.gz',
-    timeoutMs: 400,
-  });
+  // The installer unrefs its own timeout timer (correct in production), so a
+  // test whose only other handle is a fake stream must keep the loop alive.
+  const keepAlive = setInterval(() => {}, 50);
+  let result;
+  try {
+    result = await installer.install({
+      url: 'https://example.test/TinyTeX-1.tar.gz',
+      timeoutMs: 400,
+    });
+  } finally {
+    clearInterval(keepAlive);
+  }
   assert.equal(result.ok, false);
   assert.equal(result.code, 'TIMEOUT');
   const status = installer.status();
   assert.equal(status.state, 'failed');
   assert.equal(status.error.code, 'TIMEOUT');
   assert.deepEqual(await readdir(path.join(dir, 'tmp')), []);
+  gate.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 test('an extraction failure fails the install and removes staging', async (t) => {
