@@ -15,8 +15,20 @@
 > （`editorAutoSave`、`editorAutoSaveDelayMs`）；仍然可以 Ctrl+S / 三角按钮立即构建。
 > 自动保存复用同一条 `POST /latex/file` → `compile-file` 路径，冲突/错误会停止自动循环。
 > 详见 `docs/acceptance.md` 附录 N。
+>
+> **更新（2026-11-23，v0.4.0）**：新增「agent 看图」与「预览变上下文」两条链路：
+> `src/render.js` + `src/png.js` 负责页面光栅化、文本锚点与像素 diff；`src/annotations.js`
+> 负责批注持久化与重建后按 quote 重锚；新增 `latex_look` / `latex_annotations` 两个工具、
+> `POST /latex/ask` 与 `/latex/annotations` 四个方法，以及预览的 TextLayer/选区浮条/批注层。
+> 详见 §18。
 
-本文档描述 `D:\deepseekharness\latex-plugin`（包名 `dsh-latex`，v0.2.0；下文 sample 输出来自 v0.1 的历史运行）的**真实实现**：
+> **更新（2026-11-23，v0.6.0）**：新增构建历史/audit 基线、学术体检、CodeMirror、
+> TinyTeX 安装器与预览体验；详见 §20。
+>
+> **更新（2026-11-23，v0.5.0）**：新增整本 audit/并排图、框选截图与可选 OCR、逐条删除与
+> 快捷键、跨进程批注锁与原子渲染；详见 §19。
+>
+> 本文档描述 `D:\deepseekharness\latex-plugin`（包名 `dsh-latex`，v0.2.0；下文 sample 输出来自 v0.1 的历史运行）的**真实实现**：
 模块划分、三条入口如何共用同一个服务对象、项目识别、构建状态机、last-good 发布、自动构建、
 SSE 协议、PDF.js viewer、SyncTeX，以及安装/配置/卸载路径。所有结论都能落到源码行号或本机可复核的
 文件/命令行证据上；限制与坑见同目录的 `limitations.md`。
@@ -695,10 +707,11 @@ tool view 只注册已知 key（`client.js:1976-1982` 遍历 `TOOL_LABELS`），
 `element.offsetTop - 8`。文档就绪后把当前页滚进视口在 `client.js:1261-1269`（依赖 `docInfo.status/numPages/scale`，
 所以缩放变化也会重新对位）。
 
-**导航参数跳页**：`client.js:1440-1446`，当 `params.page` 是有限正数且不等于当前页时 `goToPage`，
-依赖 `[params.page, docInfo.status, docInfo.numPages]`——同一 tab 被前向 SyncTeX 再次打开时会生效。
+**导航参数跳页**：`params.page` 为有限正数时 `goToPage`；若同时带 `params.x/y`（前向 SyncTeX），
+还会在页面上标出 2.6 秒的高亮环。依赖 `[params.page, params.x, params.y, params.syncToken, revision,
+docInfo.status, docInfo.numPages]`——同一 tab 被反复定位时 revision 变化仍然生效。
 
-**双击反查**：`onDoubleClick`（`client.js:1448-1493`）：
+**Ctrl+单击反查**：页面元素的 `onMouseDown`（`client.js` 的 `revealSourceAt`），按住 Ctrl/Cmd 时才触发：
 
 ```js
 const rect = canvas.getBoundingClientRect();
@@ -707,9 +720,10 @@ const y = (event.clientY - rect.top) / scale;
 POST /latex/synctex-inverse { project, page, x, y }
 ```
 
-拿到 `result` 文本后：`/:(\d+)(?:\s|\()/` 取行号，`/SyncTeX inverse: (.+?)(?::\d+)?(?: |$)/` 取源文件
-（相对项目根就拼回绝对路径），`openResource(sessionFileAddress(...), {params:{line}})` 打开源码并跳行，
-同时显示 toast 与 banner。这条链路的已知缺陷（含空格路径截断）见 `limitations.md` §10。
+返回结构化 `result{file, relativeFile, line, stale}`（宿主侧 UTF-8→GBK 解码、按 `Input:`/`Line:` 取字段，
+见 `service.js` 的 `decodeSyncTeXOutput`）：`openResource(sessionFileAddress(...), {params:{line}})` 打开源码并跳行，
+`openResource` 返回 false 时 toast 报「右侧面板没能打开源码标签」而不是假成功；随后 `focusResourceTab` 按 tab id
+再聚焦一次。Ctrl+单击的 mouseup 用 `suppressSelectRef` 跳过随后的选区浮层；普通双击不再触发同步。
 
 **状态保持**：`viewStates` 是模块级 `Map`（`client.js:221`），key 为 projectId，值 `{page, zoomMode, zoomPercent}`
 （`client.js:1131-1134`、`client.js:1392`、`client.js:1420-1423`、`client.js:1568-1575`）。tab 关闭再打开时
@@ -758,7 +772,9 @@ stale 横幅（`1623-1625`）、构建中横幅（`1615-1622`）。
    - 没解析到时把原始文本尾部附在提示里返回。
 
 调用方：工具 `latex_synctex`（`tools.js:429-461`，`direction` 枚举 forward/inverse，参数 `file/line/column/page/x/y`）；
-HTTP 有 `GET /latex/synctex`（仅 forward）与 `POST /latex/synctex-inverse`；UI 有工作台的前向定位与 viewer 的双击反查。
+HTTP 有 `GET /latex/synctex`（仅 forward）与 `POST /latex/synctex-inverse`；UI 里编辑器 `Ctrl`+单击发起前向定位
+（带当前文件的相对路径，返回 `page/x/y` 后切到已有的 PDF 预览页并在对应位置画 2.6 秒高亮环），
+viewer 里 `Ctrl`+单击发起反查。
 三者共用这一份实现。
 
 工具参数 `isConcurrencySafe: () => true`（`tools.js:453`）——查询不写状态，可以并发。
@@ -908,3 +924,231 @@ autoOpenPreview=true、previewSurface=native、allowedRoots=[]、extraLatexmkArg
 | `docs/acceptance.md` | 端到端验收矩阵（由 acceptance 任务产出） |
 | `docs/review-host.md`、`docs/review-client.md`、`docs/security-audit.md`、`docs/synctex-notes.md` | 对应专项任务产出 |
 | `latex-plugin-tests/` | 真实 fixtures（single-math、chinese-ctex、multi-file、biblatex-biber、带 空格 项目、error-case、synctex、engines、timeout、include-subdir） |
+
+---
+
+## 18. v0.4.0：agent 看图与预览上下文
+
+### 18.1 模块
+
+| 模块 | 职责 |
+| --- | --- |
+| `src/render.js` | 探测 `pdftoppm`/`pdftotext`/`pdfinfo`（其次 `gswin64c`/`gs`、`mutool`）；argv 数组执行、超时/取消；`pdfinfo` 页数；整本 `pdftotext` 文本；`pdftotext -bbox` 单页词框；quote→页/框；内容哈希；渲染缓存目录与裁剪 |
+| `src/png.js` | 零依赖 PNG 解码（8-bit、非交错、filter 0–4、灰度/RGB/RGBA/调色板）；逐像素 diff（变化数、比例、包围盒）；不支持时返回 `comparable:false` 而不是猜 |
+| `src/annotations.js` | 每项目 `annotations-<fingerprint>.json`：原子写、串行读改写、条目/字节上限、损坏文件备份、按 quote 重锚或标记 `stale` |
+| `src/service.js` | `look()` 编排（取 PDF→文本锚点→页数→渲染/缓存→diff→SyncTeX 反查）；`list/create/update/clearAnnotations()`；`askFromSelection()`（Host `sessionController.prompt`，120 s 接受超时）；`#renderTools()` 复用 TeX toolchain 的 binDir |
+| `src/tools.js` | `latex_look`（返回 `{type:'image'}` + 文本；`ctx.attachments.saveImages` 不可用时降级为 png 路径）；`latex_annotations`（list/resolve/clear） |
+| `src/routes.js` | `POST /latex/ask`、`GET/POST/PATCH/DELETE /latex/annotations`；全部走既有 `admit()` |
+| `client.js` | 预览 TextLayer（手写 span 定位，不依赖 pdf.js viewer CSS）、选区浮条（提问/批注/复制）、批注高亮层、批注面板、失败降级复制 |
+
+### 18.2 数据流
+
+**`latex_look`：**
+
+```
+resolveProject → service.look
+  ├─ #lookPdf: previewPath（last-good）→ 回退 pdfPath
+  ├─ locateQuote(text) → pdftotext 全页文本 → 页码 + pdftotext -bbox 框
+  ├─ pdfinfo → 页数/首页尺寸；crop（0–1 归一化）按 dpi 换算像素
+  ├─ sha256(pdf) → .dsh-latex/look/<hash16>/page-N-d120[-crop].png
+  │    ├─ 命中：cached
+  │    └─ 未命中：pdftoppm -singlefile -f N -l N -r dpi
+  ├─ previousLookPage → diffPngs（0–1 阈值 24，maxPixels 限制）
+  ├─ SyncTeX inverse（quote 框中心 / point / 页中心，页中心标 approximate）
+  └─ pruneLookCaches(keep)
+```
+
+工具侧只做两件事：把 `pngPath` 读成字节交给 `ctx.attachments.saveImages`，
+把返回的 `ImageAttachmentRef` 放进 `output.render` 的 `image` block；附件服务不可用
+或超限时，文本里保留绝对路径与原因，调用仍成功。
+
+**批注：**
+
+```
+预览选区 → readPageSelection（quote、页、归一化 rects、PDF 点）
+  ├─ 提问：/latex/ask → syncTex-inverse（可选）→ sessionController.prompt(queue)
+  └─ 批注：POST /latex/annotations → annotations.js（原子写）
+agent：latex_annotations list → 改源 → latex_compile → resolve
+重建后首次 list：buildVersion 不一致 → locateQuote 重锚（更新 page/rects）
+                 失败 → status=stale + staleReason
+```
+
+### 18.3 不变量
+
+1. 渲染只读已注册项目的 `previewPath`/`pdfPath`，输出只写 `stateDir/look/`；不提供任意路径渲染。
+2. 命令一律 argv 数组（`spawn` 无 shell），超时可取消；缺渲染器返回 `NO_RENDERER`，不伪造图片。
+3. 图片 diff 不引入图像库：PNG 解码器只支持本项目会遇到的子集，不支持就标记不可比较。
+4. 批注写入有条目/字节上限，读改写串行；损坏文件先备份再当空库处理。
+5. 新路由复用 `admit()`；`/latex/ask` 只接受 Host session controller 的会话 id 正则。
+6. 缓存按 PDF 内容哈希分目录，最多保留 `lookCacheKeep` 个构建，避免无界增长。
+7. 预览文本层只加透明 span，不改变 canvas/Ctrl+单击 SyncTeX/懒渲染行为。
+
+### 18.4 测试
+
+- `test/render.test.mjs` / `test/png.test.mjs` / `test/annotations.test.mjs`：纯单元覆盖探测、解析、解码、diff、缓存、上限、重锚。
+- `test/service-look.test.mjs`：`askFromSelection` 的消息组成、`latex_look` 的图片 block 与附件降级、`latex_annotations` 的 list/resolve/clear。
+- `scripts/e2e.mjs`：真实 TeX + Poppler，编译 `examples/{hello,chinese,multi-file}`，渲染、文本锚点、CJK、diff、缓存、重锚、ask；缺 TeX 时 SKIP。
+- CI 新增 `e2e` job（Ubuntu + `texlive-xetex`/`texlive-lang-chinese` + `poppler-utils`）。
+
+---
+
+## 19. v0.5.0：整本 audit、截图/OCR、删除与并发加固
+
+### 19.1 新增模块与路由
+
+| 模块 / 路由 | 职责 |
+| --- | --- |
+| `src/png.js`（扩展） | 新增 PNG 编码（zlib + CRC32）、裁剪、RGB 归一化与 `composeSideBySide`（裁剪变化区、20px 边距、10px 间隔、两侧红框） |
+| `src/ocr.js` | 探测本地 `tesseract`；`ocrImage()` 以 argv 运行 `tesseract <img> stdout -l <lang> --psm 6`；临时文件用完即删；缺引擎返回 unavailable |
+| `service.audit` | 用 `previous-<fingerprint>.pdf` 渲染上一构建，逐页与新预览 diff；变化页合成裁剪并排图；报告新增/删除/失败/截断；受 `auditMaxPages`/`auditDpi`/`auditMaxImages` 约束 |
+| `service.askImage` | 校验 base64 图片（PNG/JPEG/WebP、大小上限）→ 可选 OCR → `sessionController.prompt` 发送 `text + image` |
+| `service.annotationImage` | 按批注 id 返回受控截图路径与 media type |
+| `POST /latex/ask-image` | 截图提问入口；body 上限 32 MiB，图片大小由 `askImageMaxBytes` 约束 |
+| `GET /latex/annotation-image` | 读取项目 `annotation-images/` 内的截图；拒绝任意路径 |
+| `DELETE /latex/annotations?id=` | 逐条删除批注与截图；无 id 时仍按 `all` 清理 |
+
+### 19.2 上一构建保留
+
+`LatexBuilder.projectPaths` 新增 `previousPath`。每次成功发布新预览前，如果旧
+`previewPath` 存在，先 `atomicCopy` 到 `previousPath`，再覆盖预览；`clean includePreview`
+一并删除。audit 用新旧两个 PDF 分别渲染同页，而不是依赖"上次恰好看过这一页"的缓存，
+因此整本审计不再受历史 look 页面的限制。代价是每个项目多保留一份 PDF。
+
+### 19.3 并发不变量
+
+1. 批注读改写：进程内 Promise 队列 + 跨进程 `annotations-<fp>.json.lock`（`open(...,'wx')`）。
+   等待 `annotationsLockWaitMs`；超过 `annotationsLockStaleMs` 的锁视为崩溃残留并回收；
+   等待超时返回 503 `ANNOTATIONS_BUSY`，绝不无锁写入。
+2. 渲染：先写 `<out>.tmp-<pid>-<rand>.png`，成功后 `rename` 到目标；失败清理临时文件。
+   两进程同时渲染同一页时都能成功，最后写入者赢，读者不会看到半张 PNG。
+3. 删除/清空批注：先写 JSON 再删截图；截图路径由服务端在 `stateDir/annotation-images/`
+   内生成并经 `isInside` 校验，客户端不能传路径。
+
+### 19.4 源码行精确化
+
+`askFromSelection` 不再只信客户端点：用 `pdftotext -bbox` 找到 quote 的词框，
+取首行中心点做 SyncTeX inverse；`latex_look` 的 text 锚点同样改用首行锚点。
+只有页中心兜底才标 `approximate`。e2e 断言 `\section{An equation}` → `main.tex:11`。
+
+### 19.5 测试
+
+- 单元：PNG 编码/裁剪/合成、批注删除/截图/锁过期/锁占用/两进程并发写、audit 工具图片块、
+  askImage 的 text+image 形状、截图批注存储与删除。
+- e2e：两页文档 audit（page 1 changed、page 2 added、≤3 张并排图）、截图提问与截图批注、
+  真实 SyncTeX 源码行、并发渲染无临时文件。
+- CI：e2e job 增加 `tesseract-ocr`/`tesseract-ocr-chi-sim`，OCR 分支在 CI 可用。
+
+## 20. v0.6.0: build history, paper checks, editor and bootstrap
+
+### 20.1 Build history and audit baselines
+
+`src/build.js` archives every successful publication into
+`stateDir/history/build-<version>.pdf` plus `history/index.json` (at most five
+entries; oldest PDFs are deleted). The entry records `version`, `builtAt`,
+`reason` (`manual`/`editor`/`auto`/…), `engine`, `pages`, `durationMs` and
+`manual`. Archiving is best-effort: a history failure logs a warning and never
+fails the build.
+
+`LatexService.#resolveAuditBaseline` chooses the PDF `audit` compares against:
+`last-manual` selects the newest `manual` entry, an explicit version selects
+that entry, and the default prefers the newest manual/editor build and falls
+back to the retained `previous-<fingerprint>.pdf`. An auto-build is therefore
+never the default baseline; the result carries `baseline` so the UI/model can
+say which build was used. `GET /latex/history` exposes the index; the preview
+panel calls `POST /latex/audit` and gets image URLs served by
+`GET /latex/audit-image` (basename allowlist, resolved only inside
+`stateDir/look`). Audit progress is kept on `project.auditProgress` and exposed
+through the normal SSE snapshot.
+
+Audit rendering first collects missing page caches and, when Poppler is
+available, renders a contiguous range with one `pdftoppm -f from -l to`
+invocation per PDF (`renderPageRange`), renaming the numbered outputs into the
+per-page cache. Single-page rendering remains the fallback for non-Poppler
+renderers or gaps. On Windows 11 / TeX Live 2025, rendering 30 letter-size pages at
+100 dpi took **1.06 s** as 30 separate `pdftoppm` calls vs **0.66 s** as one
+range call (about 1.6×); the gain is bounded by Poppler's own per-page work.
+
+### 20.2 Paper checks
+
+`src/paper-checks.js` is pure, dependency-free text analysis:
+
+- `stripComments` removes TeX comments while preserving line numbers and
+  handles `\%`/`\%`;
+- `parseBibTeX` parses brace/paren entries and reports errors without throwing;
+- `citeAudit` recognizes the common citation commands, optional `[...]` args
+  and `\nocite{*}`;
+- `bibLint` checks duplicate keys and required fields (including author/editor
+  alternatives and crossref/xdata inheritance);
+- `layoutAudit` mines the `.log`, `.aux` and parsed diagnostics for box
+  warnings, undefined references/citations, page-count mismatches,
+  duplicate labels, figure/table labels and configured custom regex rules.
+
+`LatexService` walks the project root with a bounded recursion (400 files,
+8 MiB, skips build/.git/deps) and joins `.bib` text; the tools are read-only.
+`latex_bib_fill` only calls Crossref for one DOI and returns proposed values
+for fields missing from the matching entry; it never rewrites the `.bib`.
+
+### 20.3 CodeMirror editor
+
+`assets/codemirror.mjs` is a one-time esbuild bundle of
+`@codemirror/view|state|commands|search|language|legacy-modes` (MIT; notices in
+`assets/licenses/CODEMIRROR-NOTICE.txt`). The Host serves it through the
+existing asset allowlist. `client.js` dynamically imports it after the source
+loads, then mounts an `EditorView` with line numbers, LaTeX stream mode,
+history/search/bracket/fold extensions and a `Mod-s` keymap. The React draft
+state remains the source of truth: editor changes update it, and external
+draft/restore changes are dispatched back only when the document differs. If
+the import fails the original textarea is rendered and all existing save
+semantics still apply.
+
+Drafts are stored in `sessionStorage` under `dsh-latex-draft:<absolute path>`
+(debounced; removed on successful save). The outline is parsed from
+`\part|\chapter|\section|\subsection|\subsubsection` in the current draft and
+jumps by dispatching a selection + `scrollIntoView`. A window `focus` check
+compares the disk revision; a clean buffer reloads silently, a dirty buffer
+shows a banner.
+
+### 20.4 TinyTeX bootstrap
+
+`src/toolchain-install.js` is an explicit state machine (`idle/downloading/
+verifying/extracting/done/failed/cancelled`). It streams the download to
+`installDir/tmp`, updates SHA-256 while writing, optionally enforces
+`toolchainSha256`, then extracts:
+
+- Windows: the official `.exe` self-extractor runs with `[exe, '-y']` in a
+  staging directory (`shell: false`);
+- zip/tar assets: system `tar -tf` is scanned first (reject absolute, drive,
+  UNC and `..` entries), then `tar -xf` into staging.
+
+The extracted `TinyTeX/bin/windows` (or `bin/x86_64-linux`, `bin`) is
+atomically promoted; a reinstall stashes the old tree and rolls back on
+failure. `LatexService` exposes status/start/cancel and, on success, updates
+`config.texBinDir`, clears the builder cache and re-probes. One-click install
+is intentionally Windows-only; other platforms get detection plus manual
+instructions.
+
+### 20.5 Preview UX
+
+The preview now keeps per-project page/zoom in localStorage (in-memory map as
+a cache), loads the pdf.js outline and maps destinations to pages, searches all
+pages via `getTextContent` (50 hits, `Ctrl+F`), downloads the current published
+PDF through `/latex/pdf`, and applies a CSS invert filter for a dark preview.
+TOC, search, audit and annotation panels share the existing overlay layout and
+are mutually exclusive where they would overlap.
+
+### 20.6 Local OCR (RapidOCR / PP-OCRv4)
+
+`src/rapidocr.js` manages an isolated Python venv. `GET /latex/ocr` reports the
+selected engine; `POST /latex/ocr/install` creates the venv, installs
+`rapidocr_onnxruntime==1.2.3` (via `uv` when available, otherwise pip) and
+warms the bundled PP-OCR models with a blank image; `POST /latex/ocr/cancel`
+aborts the child processes. The venv lives under `ocrInstallDir`
+(`~/.dsh-latex/ocr` by default) and never modifies PATH or the system Python.
+
+The Node side invokes `assets/rapidocr-runner.py` with the managed interpreter;
+the runner emits one JSON object (text, lines, scores, boxes) with UTF-8 stdout
+reconfigured explicitly, so Windows' GBK console cannot corrupt Chinese output.
+`src/service.js` prefers RapidOCR, falls back to a detected Tesseract binary,
+and reports "no engine" as data. Screenshot questions and annotation OCR share
+the same `#ocrBuffer` path; the preview popover shows an install button and
+progress when the status is missing/installing.

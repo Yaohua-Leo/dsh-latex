@@ -7,7 +7,9 @@
  * and a next action.
  */
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { defineTool } from './tool.js';
+import { errorMessage } from './util.js';
 
 const ENGINE_ENUM = ['xelatex', 'pdflatex', 'lualatex'];
 
@@ -95,6 +97,242 @@ function projectStatusLine(project) {
           : 'never built';
   return `${project.mainFile} | ${project.engine} | ${state} | preview v${project.previewVersion || '-'}`;
 }
+
+function oneLine(value, max = 160) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function roundBox(box) {
+  if (!box) return '';
+  const round = (value) => Math.round(Number(value) * 10) / 10;
+  return `x${round(box.x)} y${round(box.y)} ${round(box.w)}x${round(box.h)}`;
+}
+
+function formatLookFailure(look) {
+  return toolText([
+    `LaTeX look failed: ${look.code ?? 'ERROR'}`,
+    look.message,
+    look.pages ? `pages: ${look.pages}` : undefined,
+    look.capability
+      ? `renderer: ${look.capability.engine ?? 'none'} | text extraction: ${
+          look.capability.canExtractText ? 'yes' : 'no'
+        }`
+      : undefined,
+    'Next: build the project first, or install a PDF renderer (TeX Live ships pdftoppm).',
+  ]);
+}
+
+function formatLookResult(look) {
+  const lines = [];
+  lines.push(
+    `LaTeX look: page ${look.pages ? `${look.page}/${look.pages}` : look.page} @ ${look.dpi} dpi (${look.engine}${
+      look.cached ? ', cached' : ''
+    })`,
+  );
+  lines.push(`project: ${look.rootDir}`);
+  if (look.text) {
+    if (look.text.found) {
+      lines.push(
+        `text: found on page ${look.text.page}${look.text.box ? ` at ${roundBox(look.text.box)}` : ''}`,
+      );
+    } else {
+      lines.push(`text: NOT found (${look.text.message ?? 'no match'}); rendered the requested page instead.`);
+    }
+  }
+  if (look.source) {
+    if (look.source.ok) {
+      const file = look.source.relativeFile ?? look.source.file;
+      lines.push(
+        `source: ${file}${look.source.line ? `:${look.source.line}` : ''}${
+          look.source.approximate ? ' (approximate: page centre)' : ''
+        }`,
+      );
+    } else if (look.source.message) {
+      lines.push(`source: ${look.source.message}`);
+    }
+  }
+  if (look.diff) {
+    if (look.diff.comparable) {
+      if (look.diff.changed > 0) {
+        lines.push(
+          `diff vs previous build: ${look.diff.changed} px changed (${(look.diff.ratio * 100).toFixed(2)}%)${
+            look.diff.box ? `, box ${roundBox(look.diff.box)}` : ''
+          }`,
+        );
+      } else {
+        lines.push('diff vs previous build: no visible change');
+      }
+    } else {
+      lines.push(`diff vs previous build: not comparable (${look.diff.reason ?? 'unknown'})`);
+    }
+  } else {
+    lines.push('diff vs previous build: no previous render of this page');
+  }
+  if (look.cropDropped) lines.push('crop: dropped (page size unavailable)');
+  lines.push(`png: ${look.pngPath}`);
+  lines.push('Next: compare the image with the source location; edit the .tex file and compile again if needed.');
+  return lines.join('\n');
+}
+
+function formatAnnotations(listed) {
+  const lines = [
+    `LaTeX annotations for ${listed.mainFile} (build v${listed.buildVersion || '-'})`,
+    `counts: open ${listed.counts.open} | stale ${listed.counts.stale} | resolved ${listed.counts.resolved} | total ${listed.counts.total}`,
+    listed.reanchorAvailable
+      ? 're-anchoring: available (pdftotext)'
+      : 're-anchoring: unavailable (pdftotext missing); old items may be stale',
+  ];
+  const items = listed.items.slice(0, 50);
+  for (const item of items) {
+    const comment = item.comment ? ` — ${oneLine(item.comment, 160)}` : '';
+    const image = item.image ? ' [screenshot]' : '';
+    const ocr = item.ocrText ? ` | OCR: ${oneLine(item.ocrText, 100)}` : '';
+    lines.push(
+      `- ${item.id} p${item.page} [${item.status}]${image} "${oneLine(item.quote, 160)}"${comment}${ocr}`,
+    );
+  }
+  if (listed.items.length > items.length) lines.push(`... ${listed.items.length - items.length} more`);
+  if (listed.items.length === 0) {
+    lines.push('No annotations. They are created from the PDF preview selection toolbar.');
+  } else {
+    lines.push('Next: fix the source for open annotations, rebuild, then resolve them with action=resolve.');
+  }
+  return lines.join('\n');
+}
+
+function formatCitationAudit(result) {
+  const lines = [
+    `LaTeX citation audit: ${result.texFiles.length} .tex file(s) | ${result.bibFiles.length} .bib file(s)`,
+    `cited: ${result.cited.length} | missing from bib: ${result.missing.length} | never cited: ${result.neverCited.length}`,
+  ];
+  if (result.missing.length > 0) {
+    lines.push('cited but missing from the .bib:');
+    for (const key of result.missing.slice(0, 80)) {
+      const occurrence = (result.occurrences ?? []).find((item) => item.key === key);
+      lines.push(`- ${key}${occurrence ? ` (${occurrence.path}:${occurrence.line})` : ''}`);
+    }
+  }
+  if (result.neverCited.length > 0) {
+    lines.push('present in the .bib but never cited:');
+    for (const key of result.neverCited.slice(0, 80)) lines.push(`- ${key}`);
+  }
+  if (result.bibErrors?.length > 0) {
+    lines.push(`bib parse errors: ${result.bibErrors.length}`);
+    for (const error of result.bibErrors.slice(0, 10)) lines.push(`- ${error.message ?? error}`);
+  }
+  if (result.missing.length === 0 && result.neverCited.length === 0) {
+    lines.push('No citation-key problems found.');
+  }
+  return lines.join('\n');
+}
+
+function formatBibliographyLint(result) {
+  const lines = [
+    `LaTeX bib lint: ${result.entries.length} entr${result.entries.length === 1 ? 'y' : 'ies'} | ${result.issues.length} issue(s)`,
+  ];
+  if (result.errors?.length > 0) {
+    lines.push(`parse errors: ${result.errors.length}`);
+    for (const error of result.errors.slice(0, 10)) lines.push(`- ${error.message ?? error}`);
+  }
+  for (const issue of result.issues.slice(0, 80)) {
+    lines.push(`- [${issue.severity ?? 'warning'}] ${issue.key ?? issue.type ?? ''}: ${issue.message}`);
+  }
+  if (result.issues.length === 0 && (result.errors?.length ?? 0) === 0) lines.push('No bib problems found.');
+  return lines.join('\n');
+}
+
+function formatLayoutAudit(result) {
+  const lines = [
+    `LaTeX layout lint: ${result.issues.length} issue(s) | pages: ${result.pageCount ?? 'unknown'} | figures: ${
+      result.figures?.length ?? 0
+    } | tables: ${result.tables?.length ?? 0}`,
+  ];
+  for (const issue of result.issues.slice(0, 80)) {
+    lines.push(
+      `- [${issue.severity ?? 'warning'}] ${issue.code ?? 'issue'}${issue.line ? `:${issue.line}` : ''}: ${
+        issue.message
+      }`,
+    );
+  }
+  if (result.issues.length === 0) lines.push('No layout warnings found.');
+  return lines.join('\n');
+}
+
+function formatCrossrefFill(result) {
+  const lines = [`Crossref ${result.doi}: ${result.message}`];
+  if (result.key) lines.push(`bib key: ${result.key}`);
+  if (result.missing && Object.keys(result.missing).length > 0) {
+    lines.push('missing fields with proposed values (not written):');
+    for (const [name, value] of Object.entries(result.missing)) lines.push(`- ${name} = ${String(value)}`);
+  }
+  return lines.join('\n');
+}
+
+function formatAuditFailure(result) {
+  return toolText([
+    `LaTeX audit failed: ${result.code ?? 'ERROR'}`,
+    result.message,
+    result.capability
+      ? `renderer: ${result.capability.engine ?? 'none'}`
+      : undefined,
+    'Next: run latex_compile first, or install a PDF renderer (TeX Live ships pdftoppm).',
+  ]);
+}
+
+function formatAuditResult(result) {
+  const lines = [];
+  lines.push(
+    `LaTeX audit: pages ${result.from}-${result.to} of ${result.pages} | dpi ${result.dpi} | previous build ${
+      result.previous ? (result.identical ? 'byte-identical' : `has ${result.previousPages} page(s)`) : 'missing'
+    }`,
+  );
+  if (result.message) lines.push(result.message);
+  lines.push(
+    `changed: ${result.changed.length} | added: ${result.added.length} | removed: ${result.removed.length} | failed: ${
+      result.failed.length
+    } | images: ${result.images.length}`,
+  );
+  if (result.truncated) {
+    lines.push(`truncated: only pages ${result.from}-${result.to} were checked (auditMaxPages budget).`);
+  }
+  for (const entry of [...result.changed, ...result.added, ...result.removed, ...result.failed]) {
+    if (entry.status === 'removed') {
+      lines.push(`- page ${entry.page}: removed`);
+      continue;
+    }
+    if (entry.status === 'added') {
+      const source = entry.source
+        ? ` | source: ${entry.source.file}${entry.source.line ? `:${entry.source.line}` : ''}`
+        : '';
+      const image = entry.imagePath ? ` | image attached` : '';
+      lines.push(`- page ${entry.page}: added${source}${image}`);
+      continue;
+    }
+    if (entry.code) {
+      lines.push(`- page ${entry.page}: render failed (${entry.code}: ${entry.message ?? ''})`);
+      continue;
+    }
+    const changed = Number.isFinite(entry.changed)
+      ? `${entry.changed} px changed (${(entry.ratio * 100).toFixed(2)}%)`
+      : `changed (${entry.reason ?? 'unknown'})`;
+    const box = entry.box ? ` | box ${roundBox(entry.box)}` : '';
+    const source = entry.source
+      ? ` | source: ${entry.source.file}${entry.source.line ? `:${entry.source.line}` : ''}${
+          entry.source.approximate ? ' (approximate)' : ''
+        }`
+      : '';
+    const image = entry.imagePath ? ` | image attached` : '';
+    lines.push(`- page ${entry.page}: ${changed}${box}${source}${image}`);
+  }
+  if (result.images.length > 0) {
+    lines.push('Composites: old | new, cropped around the change; the red box marks the diff region.');
+  } else if (result.previous && !result.identical) {
+    lines.push('No composite was produced (no diff box, maxImages=0, or a page-size change).');
+  }
+  return lines.join('\n');
+}
+
 
 export function registerLatexTools(ctx, service, config) {
   const tools = ctx.get('tools');
@@ -459,6 +697,353 @@ export function registerLatexTools(ctx, service, config) {
           const project = await resolveProject(args, exec);
           const cwd = await cwdOf(exec);
           return service.syncTeX(project, args, exec.signal, cwd);
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    tools.register(
+      defineTool({
+        name: 'latex_audit',
+        description:
+          'Audit the whole built document against the previous build and return changed-page summaries plus cropped side-by-side images (old | new, red diff box). Use it after a large edit to find "compiles fine but this page moved/wrapped differently" regressions. Budgeted: checks at most `maxPages` pages (default 30) at `dpi` (default 100) and attaches at most `maxImages` composites (default 3); remaining changed pages are listed as text. Added/removed pages are reported separately, and a byte-identical rebuild returns "nothing changed".',
+        parameters: {
+          ...commonProjectParams,
+          from: { type: 'number', description: 'First 1-based page to audit (default: 1).' },
+          to: { type: 'number', description: 'Last 1-based page to audit (default: the last page).' },
+          maxPages: {
+            type: 'number',
+            description: 'Page budget for this audit, 1-60 (default from auditMaxPages, usually 30).',
+          },
+          dpi: {
+            type: 'number',
+            description: 'Render resolution for the comparison, 36-300 (default from auditDpi, usually 100).',
+          },
+          maxImages: {
+            type: 'number',
+            description: 'Maximum side-by-side composites to attach, 0-5 (default from auditMaxImages, usually 3).',
+          },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              images: { type: 'json' },
+            },
+          },
+          render: (_args, value) => {
+            const blocks = [];
+            for (const ref of value?.images ?? []) blocks.push({ type: 'image', attachment: ref });
+            blocks.push({ type: 'text', text: value?.text ?? '' });
+            return blocks;
+          },
+        },
+        isConcurrencySafe: () => false,
+        timeoutMs: 180_000,
+        execute: async (args, exec) => {
+          const project = await resolveProject(args, exec);
+          const audit = await service.audit(
+            project,
+            {
+              from: args.from,
+              to: args.to,
+              maxPages: args.maxPages,
+              dpi: args.dpi,
+              maxImages: args.maxImages,
+            },
+            exec.signal,
+          );
+          if (!audit.ok) return { text: formatAuditFailure(audit), images: [] };
+          let text = formatAuditResult(audit);
+          const images = [];
+          const attachments = ctx.get('attachments');
+          if (audit.images.length > 0) {
+            if (!attachments || typeof attachments.saveImages !== 'function') {
+              text += `\nimage: the attachment service is unavailable; open these files instead:\n${audit.images
+                .map((image) => `  ${image.path}`)
+                .join('\n')}`;
+            } else {
+              for (const image of audit.images) {
+                try {
+                  const bytes = await readFile(image.path);
+                  const refs = await attachments.saveImages([
+                    {
+                      data: new Uint8Array(bytes),
+                      mediaType: 'image/png',
+                      name: `latex-audit-page-${image.page}.png`,
+                    },
+                  ]);
+                  if (refs?.[0]) images.push(refs[0]);
+                  else text += `\nimage: no attachment reference for page ${image.page} (${image.path})`;
+                } catch (error) {
+                  text += `\nimage: could not attach page ${image.page} (${errorMessage(error)}); path: ${image.path}`;
+                }
+              }
+            }
+          }
+          return { text, images };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    tools.register(
+      defineTool({
+        name: 'latex_look',
+        description:
+          'Look at the compiled PDF the way a reader does: render one page to a PNG, locate it with SyncTeX, and (by default) diff it against the previous build. Use this when the document compiles but may still look wrong — floating figures, overfull lines, a table that is not booktabs, a rule around the title. Pass `text` to find the page containing a phrase, `point` (PDF points, top-left origin) to map an exact spot, or `page` to look at a specific page. Returns the page image plus the source file:line and the changed region.',
+        parameters: {
+          ...commonProjectParams,
+          page: {
+            type: 'number',
+            description: '1-based PDF page to render. Ignored when `text` resolves to a different page.',
+          },
+          text: {
+            type: 'string',
+            description: 'A phrase to locate in the PDF (at least 4 characters). The tool finds its page and exact box.',
+          },
+          point: {
+            type: 'object',
+            properties: {
+              x: { type: 'number', description: 'PDF x in points (72 dpi), top-left origin.' },
+              y: { type: 'number', description: 'PDF y in points (72 dpi), top-left origin.' },
+            },
+            description: 'An exact PDF point to map back to the source through SyncTeX.',
+          },
+          dpi: {
+            type: 'number',
+            description: 'Render resolution, 36-600 dpi (default from the renderDpi config, usually 120).',
+          },
+          crop: {
+            type: 'object',
+            properties: {
+              x: { type: 'number' },
+              y: { type: 'number' },
+              w: { type: 'number' },
+              h: { type: 'number' },
+            },
+            description:
+              'Optional region to crop, in normalized page coordinates (0-1). Useful to inspect one figure without sending the whole page.',
+          },
+          compare: {
+            type: 'boolean',
+            description: 'Diff this page against the previous build (default: true).',
+          },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              pngPath: { type: 'string' },
+              image: { type: 'json' },
+            },
+          },
+          render: (_args, value) => {
+            const blocks = [];
+            if (value?.image) blocks.push({ type: 'image', attachment: value.image });
+            blocks.push({ type: 'text', text: value?.text ?? '' });
+            return blocks;
+          },
+        },
+        isConcurrencySafe: () => false,
+        execute: async (args, exec) => {
+          const project = await resolveProject(args, exec);
+          const look = await service.look(
+            project,
+            {
+              page: args.page,
+              text: args.text,
+              point: args.point,
+              dpi: args.dpi,
+              crop: args.crop,
+              compare: args.compare,
+            },
+            exec.signal,
+          );
+          if (!look.ok) {
+            return { text: formatLookFailure(look) };
+          }
+          let text = formatLookResult(look);
+          let image;
+          const attachments = ctx.get('attachments');
+          if (attachments && typeof attachments.saveImages === 'function') {
+            try {
+              const bytes = await readFile(look.pngPath);
+              const refs = await attachments.saveImages([
+                {
+                  data: new Uint8Array(bytes),
+                  mediaType: 'image/png',
+                  name: `latex-page-${look.page}.png`,
+                },
+              ]);
+              image = refs?.[0];
+              if (!image) text += '\nimage: the attachment service returned no reference; use pngPath instead.';
+            } catch (error) {
+              text += `\nimage: could not attach the page PNG (${errorMessage(error)}); open pngPath instead.`;
+            }
+          } else {
+            text += '\nimage: the attachment service is unavailable in this profile; open pngPath instead.';
+          }
+          return { text, pngPath: look.pngPath, image };
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    tools.register(
+      defineTool({
+        name: 'latex_annotations',
+        description:
+          'Work with annotations the user created by selecting text in the PDF preview. `list` shows open/resolved/stale items with page, quote, comment, screenshot/OCR fields; `resolve` marks items done after you fixed the source and rebuilt; `remove` deletes one item (and its screenshot); `clear` removes resolved items (or all with all=true). Annotations are re-anchored by their quote after a rebuild, and marked stale when the quote no longer exists.',
+        parameters: {
+          ...commonProjectParams,
+          action: {
+            type: 'string',
+            enum: ['list', 'resolve', 'remove', 'clear'],
+            description:
+              'list reads annotations; resolve completes them; remove deletes one by id; clear removes resolved ones.',
+          },
+          id: { type: 'string', description: 'One annotation id (from list) to resolve or remove.' },
+          ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Several annotation ids to resolve in one call.',
+          },
+          all: {
+            type: 'boolean',
+            description: 'With action=clear, remove every annotation including open ones (default: false).',
+          },
+        },
+        output: {
+          schema: { type: 'string' },
+          render: (_args, value) => [{ type: 'text', text: value }],
+        },
+        isConcurrencySafe: () => false,
+        execute: async (args, exec) => {
+          const project = await resolveProject(args, exec);
+          const action =
+            args.action === 'resolve' || args.action === 'remove' || args.action === 'clear'
+              ? args.action
+              : 'list';
+          if (action === 'list') {
+            const listed = await service.listAnnotations(project);
+            return formatAnnotations(listed);
+          }
+          if (action === 'resolve') {
+            const ids = new Set();
+            if (typeof args.id === 'string' && args.id.trim() !== '') ids.add(args.id.trim());
+            if (Array.isArray(args.ids)) {
+              for (const id of args.ids) if (typeof id === 'string' && id.trim() !== '') ids.add(id.trim());
+            }
+            if (ids.size === 0) return 'latex_annotations resolve needs `id` or `ids`.';
+            const resolved = [];
+            const failed = [];
+            for (const id of ids) {
+              try {
+                const item = await service.updateAnnotation(project, { id, status: 'resolved' });
+                resolved.push(item);
+              } catch (error) {
+                failed.push(`${id}: ${errorMessage(error)}`);
+              }
+            }
+            return toolText([
+              `LaTeX annotations: resolved ${resolved.length} of ${ids.size}`,
+              ...resolved.map((item) => `- ${item.id} (page ${item.page}) ${oneLine(item.quote, 120)}`),
+              ...(failed.length > 0 ? ['failed:', ...failed.map((line) => `- ${line}`)] : []),
+            ]);
+          }
+          if (action === 'remove') {
+            if (typeof args.id !== 'string' || args.id.trim() === '') {
+              return 'latex_annotations remove needs `id`.';
+            }
+            const result = await service.removeAnnotation(project, args.id.trim());
+            return `LaTeX annotations: removed 1, ${result.remaining} remaining.`;
+          }
+          const result = await service.clearAnnotations(project, { all: args.all === true });
+          return `LaTeX annotations: removed ${result.removed}, ${result.remaining} remaining.`;
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    tools.register(
+      defineTool({
+        name: 'latex_cite_audit',
+        description:
+          'Audit citation keys across the project .tex files against the .bib entries: list cited-but-missing keys and bib entries that are never cited. Comments and \nocite{*} are handled; use before submission or after adding references.',
+        parameters: { ...commonProjectParams },
+        output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+        isConcurrencySafe: () => true,
+        timeoutMs: 60_000,
+        execute: async (args, exec) => {
+          const project = await resolveProject(args, exec);
+          return formatCitationAudit(await service.citationAudit(project));
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    tools.register(
+      defineTool({
+        name: 'latex_bib_lint',
+        description:
+          'Lint the project .bib files: duplicate citation keys, missing required fields per entry type, and parse errors. Does not rewrite files.',
+        parameters: { ...commonProjectParams },
+        output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+        isConcurrencySafe: () => true,
+        timeoutMs: 60_000,
+        execute: async (args, exec) => {
+          const project = await resolveProject(args, exec);
+          return formatBibliographyLint(await service.bibliographyLint(project));
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    tools.register(
+      defineTool({
+        name: 'latex_layout_lint',
+        description:
+          'Check the last build log/aux for layout problems: overfull/underfull boxes, undefined references/citations, page count, figure/table labels, and configured custom regex rules. Read-only.',
+        parameters: { ...commonProjectParams },
+        output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+        isConcurrencySafe: () => true,
+        timeoutMs: 60_000,
+        execute: async (args, exec) => {
+          const project = await resolveProject(args, exec);
+          return formatLayoutAudit(await service.layoutCheck(project));
+        },
+      }),
+    ),
+  );
+
+  disposers.push(
+    tools.register(
+      defineTool({
+        name: 'latex_bib_fill',
+        description:
+          'Look up a DOI on Crossref (no API key) and show values that are missing from the matching .bib entry. Dry-run: nothing is written automatically; copy the proposed fields or ask the user first.',
+        parameters: {
+          ...commonProjectParams,
+          doi: { type: 'string', description: 'DOI to look up, e.g. 10.1000/xyz123.' },
+          key: { type: 'string', description: 'Optional bib citation key to compare against.' },
+        },
+        output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+        isConcurrencySafe: () => true,
+        timeoutMs: 60_000,
+        execute: async (args, exec) => {
+          const project = await resolveProject(args, exec);
+          return formatCrossrefFill(
+            await service.crossrefFill(project, { doi: args.doi, key: args.key }),
+          );
         },
       }),
     ),

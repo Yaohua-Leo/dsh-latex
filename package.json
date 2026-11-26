@@ -1,6 +1,6 @@
 {
-  "name": "dsh-latex",
-  "version": "0.3.0",
+  "name": "@yaohualiu/dsh-latex",
+  "version": "0.6.1",
   "type": "module",
   "description": "Native DeepSeek Harness LaTeX workspace: edit .tex files in an in-app editor, compile local TeX Live projects with latexmk, and keep a live PDF preview refreshed on save.",
   "author": "Yaohua-Leo",
@@ -25,7 +25,8 @@
     "editor"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.5"
   },
   "scripts": {
     "test": "node --test",
@@ -51,7 +52,12 @@
     "cordis.patch.yml",
     "screenshots.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "assets/codemirror.mjs",
+    "assets/screenshots",
+    "skills",
+    "docs",
+    "assets/rapidocr-runner.py"
   ],
   "dsh": {
     "bundle": {
@@ -65,5 +71,8 @@
         "@deepseek-ai/dsh-client-ui-theme"
       ]
     }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -16,8 +16,8 @@ import { registerLatexRoutes } from './src/routes.js';
 import { LatexService } from './src/service.js';
 import { registerLatexTools } from './src/tools.js';
 
-export const name = 'dsh-latex';
-export const version = '0.3.0';
+export const name = '@yaohualiu/dsh-latex';
+export const version = '0.6.1';
 
 /**
  * Wire one optional Host service once it exists. Cordis may start plugins in
@@ -101,6 +101,8 @@ export function apply(ctx, rawConfig) {
         text: [
           'A native LaTeX workspace is available: latex_compile builds a local TeX Live project with latexmk and returns structured diagnostics with file:line locations;',
           'latex_get_diagnostics re-reads the last build; latex_preview opens/refreshes the in-app PDF preview; latex_clean, latex_cancel, latex_get_status and latex_synctex cover the rest.',
+          'latex_look renders one page of the built PDF as an image for you, with an optional text/point anchor, a SyncTeX source location and a pixel diff against the previous build — use it when the document compiles but may still look wrong.',
+          'latex_annotations lists and resolves notes the user left on a PDF selection; after you fix the source and rebuild, mark them resolved.',
           'Use these instead of running latexmk in a shell when the task involves a .tex project.',
         ].join(' '),
       });

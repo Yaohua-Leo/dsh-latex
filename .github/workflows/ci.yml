@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node: [22]
     steps:
       - uses: actions/checkout@v4
@@ -28,3 +28,47 @@ jobs:
         run: npm test
       - name: Package contents
         run: npm pack --dry-run
+
+  e2e:
+    name: e2e / ubuntu / TeX Live
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install TeX Live, Poppler and Tesseract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            latexmk texlive-xetex texlive-latex-base texlive-latex-recommended \
+            texlive-lang-chinese fonts-freefont-otf poppler-utils \
+            tesseract-ocr tesseract-ocr-chi-sim
+      - name: Compile, render and annotate examples
+        env:
+          DSH_LATEX_TEST_TMP: ${{ runner.temp }}
+        run: node scripts/e2e.mjs
+
+  macos-e2e:
+    name: e2e / macOS / BasicTeX (best effort)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install BasicTeX and required packages
+        run: |
+          brew install --cask basictex
+          export PATH="/Library/TeX/texbin:$PATH"
+          sudo tlmgr update --self
+          sudo tlmgr install latexmk xetex collection-langchinese collection-latexrecommended
+      - name: Compile, render and annotate examples
+        env:
+          DSH_LATEX_TEST_TMP: ${{ runner.temp }}
+        run: |
+          export PATH="/Library/TeX/texbin:$PATH"
+          node scripts/e2e.mjs

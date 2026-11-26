@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -184,6 +184,51 @@ test('a stale log "Output written on .pdf" line alone is not fresh evidence', as
   assert.equal(await exists(paths.previewPath), false);
 });
 
+test('a successful rebuild keeps the previous preview for audit', async (t) => {
+  const dir = await tempDir(t);
+  const root = await makeProject(dir);
+  const first = await makeBuilder(dir, {
+    writePdf: true,
+    pdfContents: 'PDF-FIRST',
+    writeLog: 'Output written on build/main.pdf (1 page, 1234 bytes).\n',
+    stdout: 'Latexmk: This is Latexmk\n',
+  });
+  const firstBuild = await buildProject(first.builder, root);
+  assert.equal(firstBuild.result.status, 'success');
+  assert.equal(await readFile(firstBuild.paths.previewPath, 'utf8'), 'PDF-FIRST');
+  assert.equal(await exists(firstBuild.paths.previousPath), false);
+
+  const second = await makeBuilder(dir, {
+    writePdf: true,
+    pdfContents: 'PDF-SECOND',
+    writeLog: 'Output written on build/main.pdf (1 page, 1234 bytes).\n',
+    stdout: 'Latexmk: This is Latexmk\n',
+  });
+  const secondBuild = await buildProject(second.builder, root);
+  assert.equal(secondBuild.result.status, 'success');
+  assert.equal(await readFile(secondBuild.paths.previewPath, 'utf8'), 'PDF-SECOND');
+  assert.equal(await readFile(secondBuild.paths.previousPath, 'utf8'), 'PDF-FIRST');
+});
+
+test('cleaning the preview also removes the retained previous build', async (t) => {
+  const dir = await tempDir(t);
+  const root = await makeProject(dir);
+  const first = await makeBuilder(dir, {
+    writePdf: true,
+    pdfContents: 'PDF-FIRST',
+    writeLog: 'Output written on build/main.pdf (1 page, 1234 bytes).\n',
+    stdout: 'Latexmk: This is Latexmk\n',
+  });
+  const firstBuild = await buildProject(first.builder, root);
+  await writeFile(firstBuild.paths.previousPath, 'PDF-PREVIOUS');
+  await first.builder.clean(
+    { paths: firstBuild.paths },
+    { includePreview: true },
+  );
+  assert.equal(await exists(firstBuild.paths.previousPath), false);
+  assert.equal(await exists(firstBuild.paths.previewPath), false);
+});
+
 test('force mode still passes -gg and accepts a fresh PDF', async (t) => {
   const dir = await tempDir(t);
   const root = await makeProject(dir);
@@ -197,4 +242,44 @@ test('force mode still passes -gg and accepts a fresh PDF', async (t) => {
 
   assert.equal(result.status, 'success');
   assert.ok(subprocess.calls[0].argv.includes('-gg'));
+});
+
+test('build history keeps the last five successful builds', async (t) => {
+  const dir = await tempDir(t);
+  const root = await makeProject(dir);
+  let paths;
+  for (let index = 1; index <= 6; index += 1) {
+    const helper = await makeBuilder(dir, {
+      writePdf: true,
+      pdfContents: `PDF-${index}`,
+      writeLog: 'Output written on build/main.pdf (1 page, 1234 bytes).\n',
+      stdout: 'Latexmk: This is Latexmk\n',
+    });
+    const built = await buildProject(helper.builder, root);
+    assert.equal(built.result.status, 'success');
+    paths = built.paths;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const index = JSON.parse(await readFile(paths.historyIndexPath, 'utf8'));
+  assert.equal(index.entries.length, 5);
+  assert.match(index.entries[0].pdf, /^build-\d+\.pdf$/);
+  assert.equal(index.entries[0].reason, 'manual');
+  assert.equal(await readFile(path.join(paths.historyDir, index.entries[0].pdf), 'utf8'), 'PDF-6');
+  const files = await readdir(paths.historyDir);
+  assert.equal(files.filter((name) => name.endsWith('.pdf')).length, 5);
+});
+
+test('cleaning the preview removes the build history directory', async (t) => {
+  const dir = await tempDir(t);
+  const root = await makeProject(dir);
+  const helper = await makeBuilder(dir, {
+    writePdf: true,
+    pdfContents: 'PDF-HISTORY',
+    writeLog: 'Output written on build/main.pdf (1 page, 1234 bytes).\n',
+    stdout: 'Latexmk: This is Latexmk\n',
+  });
+  const built = await buildProject(helper.builder, root);
+  assert.ok(await exists(built.paths.historyIndexPath));
+  await helper.builder.clean({ paths: built.paths }, { includePreview: true });
+  assert.equal(await exists(built.paths.historyIndexPath), false);
 });

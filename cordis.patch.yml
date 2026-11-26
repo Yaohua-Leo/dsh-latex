@@ -11,7 +11,7 @@
 #           engine: lualatex
 - insert:
     - id: latex
-      name: dsh-latex
+      name: '@yaohualiu/dsh-latex'
       config:
         # Directory holding latexmk.exe, xelatex.exe, ... Leave empty to
         # discover latexmk from PATH (or DSH_LATEX_TEX_BIN).
@@ -56,3 +56,39 @@
         editorAutoSaveDelayMs: 900
         # max_print_line for the TeX child; fewer wrapped log diagnostics.
         maxPrintLine: 2000
+        # latex_look page rendering: default DPI (36..300), backend preference
+        # ('auto' | 'pdftoppm' | 'ghostscript' | 'mutool'), and hard timeout.
+        # pdftoppm ships with TeX Live; no npm dependency is added.
+        renderDpi: 120
+        renderEngine: auto
+        renderTimeoutMs: 30000
+        # Skip the pixel diff above this many pixels (one rendered page).
+        lookMaxPixels: 4000000
+        # Keep this many build hashes of rendered pages (2 keeps "diff vs previous").
+        lookCacheKeep: 2
+        # Preview annotations: item count and on-disk JSON size caps.
+        annotationsMaxItems: 200
+        annotationsMaxBytes: 262144
+        # One annotation screenshot (PNG bytes) is capped separately.
+        annotationImageMaxBytes: 5242880
+        # Whole-document audit budget: pages, dpi and returned side-by-side images.
+        auditMaxPages: 30
+        auditDpi: 100
+        auditMaxImages: 3
+        # Screenshot questions are rejected above this base64-decoded size.
+        askImageMaxBytes: 8388608
+        # Optional local OCR for screenshot annotations.
+        # ocrEnabled: auto | always | off (off disables all OCR).
+        ocrEnabled: auto
+        # OCR engine preference: auto (RapidOCR first, Tesseract fallback) |
+        # rapidocr | tesseract | off.
+        ocrEngine: auto
+        # Python interpreter for the managed RapidOCR venv. Empty -> python/python3.
+        ocrPython: ''
+        # Where the managed venv lives. Empty -> ~/.dsh-latex/ocr. Set a D: path
+        # on machines with a small C: drive; the install is about 150 MB.
+        ocrInstallDir: ''
+        ocrInstallTimeoutMs: 900000
+        # Tesseract language string, e.g. 'eng' or 'eng+chi_sim' (fallback only).
+        ocrLanguages: eng
+        ocrTimeoutMs: 20000

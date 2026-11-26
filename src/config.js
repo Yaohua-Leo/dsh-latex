@@ -47,6 +47,39 @@ export function defaultConfig() {
     editorAutoSaveDelayMs: 900,
     keepBuildLogTail: 1_048_576,
     watchExtraExtensions: [],
+    // Agent-facing page rendering (`latex_look`).
+    renderDpi: 120,
+    renderEngine: 'auto',
+    renderTimeoutMs: 30_000,
+    lookMaxPixels: 4_000_000,
+    lookCacheKeep: 2,
+    // Preview annotations.
+    annotationsMaxItems: 200,
+    annotationsMaxBytes: 262_144,
+    annotationImageMaxBytes: 5_242_880,
+    // Cross-process lock around annotation read-modify-write cycles.
+    annotationsLockWaitMs: 5_000,
+    annotationsLockStaleMs: 15_000,
+    // Whole-document audit (`latex_audit`).
+    auditMaxPages: 30,
+    auditDpi: 100,
+    auditMaxImages: 3,
+    // Preview screenshot questions and optional local OCR.
+    askImageMaxBytes: 8_388_608,
+    ocrEnabled: 'auto',
+    ocrEngine: 'auto',
+    ocrPython: '',
+    ocrInstallDir: '',
+    ocrInstallTimeoutMs: 900_000,
+    ocrLanguages: 'eng',
+    ocrTimeoutMs: 20_000,
+    // Optional regex rules for `latex_layout_lint` (submission/competition rules).
+    layoutRules: [],
+    // Optional one-click TinyTeX install (explicit user action).
+    toolchainDir: '',
+    toolchainUrl: '',
+    toolchainSha256: '',
+    toolchainTimeoutMs: 600_000,
   };
 }
 
@@ -80,6 +113,27 @@ function stringList(value, maxItems = 64) {
     if (result.length >= maxItems) break;
   }
   return result;
+}
+
+/** Bounded, shape-checked layout rules for the paper checks. */
+function normalizeLayoutRules(value) {
+  if (!Array.isArray(value)) return [];
+  const rules = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (typeof entry.pattern !== 'string' || entry.pattern.trim() === '') continue;
+    if (entry.pattern.length > 500) continue;
+    const rule = {
+      pattern: entry.pattern,
+      message: typeof entry.message === 'string' ? entry.message.slice(0, 300) : undefined,
+      severity: entry.severity === 'error' ? 'error' : 'warning',
+      target: entry.target === 'aux' || entry.target === 'log' ? entry.target : 'all',
+      code: typeof entry.code === 'string' ? entry.code.slice(0, 60) : undefined,
+    };
+    rules.push(rule);
+    if (rules.length >= 20) break;
+  }
+  return rules;
 }
 
 /**
@@ -139,6 +193,58 @@ export function normalizeConfig(raw) {
     watchExtraExtensions: stringList(source.watchExtraExtensions, 32).map((entry) =>
       entry.startsWith('.') ? entry.toLowerCase() : `.${entry.toLowerCase()}`,
     ),
+    renderDpi: integer(source.renderDpi, defaults.renderDpi, 36, 300),
+    renderEngine: ['auto', 'pdftoppm', 'ghostscript', 'mutool'].includes(source.renderEngine)
+      ? source.renderEngine
+      : defaults.renderEngine,
+    renderTimeoutMs: integer(source.renderTimeoutMs, defaults.renderTimeoutMs, 5_000, 120_000),
+    lookMaxPixels: integer(source.lookMaxPixels, defaults.lookMaxPixels, 100_000, 50_000_000),
+    lookCacheKeep: integer(source.lookCacheKeep, defaults.lookCacheKeep, 1, 5),
+    annotationsMaxItems: integer(source.annotationsMaxItems, defaults.annotationsMaxItems, 1, 2000),
+    annotationsMaxBytes: integer(
+      source.annotationsMaxBytes,
+      defaults.annotationsMaxBytes,
+      16_384,
+      8_388_608,
+    ),
+    annotationImageMaxBytes: integer(
+      source.annotationImageMaxBytes,
+      defaults.annotationImageMaxBytes,
+      65_536,
+      20 * 1024 * 1024,
+    ),
+    annotationsLockWaitMs: integer(
+      source.annotationsLockWaitMs,
+      defaults.annotationsLockWaitMs,
+      200,
+      60_000,
+    ),
+    annotationsLockStaleMs: integer(
+      source.annotationsLockStaleMs,
+      defaults.annotationsLockStaleMs,
+      1_000,
+      300_000,
+    ),
+    auditMaxPages: integer(source.auditMaxPages, defaults.auditMaxPages, 1, 60),
+    auditDpi: integer(source.auditDpi, defaults.auditDpi, 36, 300),
+    auditMaxImages: integer(source.auditMaxImages, defaults.auditMaxImages, 0, 5),
+    askImageMaxBytes: integer(source.askImageMaxBytes, defaults.askImageMaxBytes, 65_536, 20 * 1024 * 1024),
+    ocrEnabled: ['auto', 'always', 'off'].includes(source.ocrEnabled)
+      ? source.ocrEnabled
+      : defaults.ocrEnabled,
+    ocrEngine: ['auto', 'rapidocr', 'tesseract', 'off'].includes(source.ocrEngine)
+      ? source.ocrEngine
+      : defaults.ocrEngine,
+    ocrPython: text(source.ocrPython, defaults.ocrPython, 1024),
+    ocrInstallDir: text(source.ocrInstallDir, defaults.ocrInstallDir, 1024),
+    ocrInstallTimeoutMs: integer(source.ocrInstallTimeoutMs, defaults.ocrInstallTimeoutMs, 60_000, 3_600_000),
+    ocrLanguages: text(source.ocrLanguages, defaults.ocrLanguages, 128),
+    ocrTimeoutMs: integer(source.ocrTimeoutMs, defaults.ocrTimeoutMs, 3_000, 120_000),
+    layoutRules: normalizeLayoutRules(source.layoutRules),
+    toolchainDir: text(source.toolchainDir, '', 1024),
+    toolchainUrl: text(source.toolchainUrl, '', 2048),
+    toolchainSha256: text(source.toolchainSha256, '', 128),
+    toolchainTimeoutMs: integer(source.toolchainTimeoutMs, defaults.toolchainTimeoutMs, 30_000, 3_600_000),
   };
 }
 
@@ -160,5 +266,21 @@ export function publicConfig(config) {
     allowShellEscape: config.allowShellEscape,
     editorAutoSave: config.editorAutoSave,
     editorAutoSaveDelayMs: config.editorAutoSaveDelayMs,
+    renderDpi: config.renderDpi,
+    renderEngine: config.renderEngine,
+    lookMaxPixels: config.lookMaxPixels,
+    annotationsMaxItems: config.annotationsMaxItems,
+    annotationsMaxBytes: config.annotationsMaxBytes,
+    annotationImageMaxBytes: config.annotationImageMaxBytes,
+    auditMaxPages: config.auditMaxPages,
+    auditDpi: config.auditDpi,
+    auditMaxImages: config.auditMaxImages,
+    askImageMaxBytes: config.askImageMaxBytes,
+    ocrEnabled: config.ocrEnabled,
+    ocrLanguages: config.ocrLanguages,
+    ocrEngine: config.ocrEngine,
+    ocrInstallDir: config.ocrInstallDir,
+    toolchainDir: config.toolchainDir,
+    toolchainUrl: config.toolchainUrl,
   };
 }

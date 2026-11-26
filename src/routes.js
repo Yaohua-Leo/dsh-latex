@@ -18,6 +18,22 @@
  *   POST /action                 compile/cancel/clean/watch/preview/
  *                                compile-file
  *   POST /synctex-inverse        PDF point -> source line
+ *   POST /ask                    send a PDF selection into one session
+ *   POST /ask-image              send a cropped screenshot into one session
+ *   GET  /ocr                    local OCR engine/install status
+ *   POST /ocr/install            install RapidOCR into a managed venv
+ *   POST /ocr/cancel             cancel the OCR install
+ *   GET  /toolchain              TinyTeX install status
+ *   POST /toolchain/install      start a one-click TinyTeX install
+ *   POST /toolchain/cancel       cancel the running install
+ *   GET  /history                recent successful builds (audit baselines)
+ *   POST /audit                  run a bounded page-by-page audit
+ *   GET  /audit-image            one side-by-side audit composite
+ *   GET  /annotation-image       one stored annotation screenshot
+ *   GET  /annotations            list preview annotations
+ *   POST /annotations            create one annotation (optional screenshot)
+ *   PATCH /annotations           resolve/update one annotation
+ *   DELETE /annotations          clear resolved/all, or one item with ?id=
  */
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
@@ -27,9 +43,10 @@ import { errorMessage, isInside, tailText } from './util.js';
 
 const BODY_LIMIT = 64 * 1024;
 const FILE_BODY_LIMIT = 8 * 1024 * 1024;
+const IMAGE_BODY_LIMIT = 32 * 1024 * 1024;
 const STREAM_LIMIT = 24;
 const HEARTBEAT_MS = 15_000;
-const ASSET_NAMES = new Set(['pdf.min.mjs', 'pdf.worker.min.mjs', 'LICENSE-pdfjs.txt']);
+const ASSET_NAMES = new Set(['pdf.min.mjs', 'pdf.worker.min.mjs', 'codemirror.mjs', 'LICENSE-pdfjs.txt']);
 const ASSET_DIR = fileURLToPath(new URL('../assets/', import.meta.url));
 
 class HttpError extends Error {
@@ -205,6 +222,22 @@ function rankForSession(service, { sessionId, cwd }) {
     if (Number.isFinite(ordered[0].distance)) return ordered[0].project;
   }
   return projects.sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0];
+}
+
+/** Resolve the project named by a JSON body (`project` id or `path`). */
+async function projectFromBody(service, body) {
+  if (typeof body.project === 'string' && body.project.trim() !== '') {
+    const project = service.getProject(body.project.trim());
+    if (!project) throw new HttpError(404, 'project not found');
+    return project;
+  }
+  if (typeof body.path === 'string' && body.path.trim() !== '') {
+    return service.ensureProject({
+      file: body.path.trim(),
+      cwd: typeof body.cwd === 'string' && body.cwd !== '' ? body.cwd : undefined,
+    });
+  }
+  throw new HttpError(400, 'project or path is required');
 }
 
 function compactBuildResult(result) {
@@ -416,6 +449,197 @@ export function registerLatexRoutes(ctx, service, config) {
             column: Number(parsed.searchParams.get('column')) || 1,
           });
           sendJson(res, 200, { ok: true, synctex: result });
+          return;
+        }
+
+        if (pathname === '/latex/ask' && method === 'POST') {
+          const body = await readJsonObject(req);
+          if (typeof body.sessionId !== 'string' || body.sessionId.trim() === '') {
+            throw new HttpError(400, 'sessionId is required');
+          }
+          let project;
+          if (body.project || body.path) project = await projectFromBody(service, body);
+          const source =
+            body.source && typeof body.source === 'object'
+              ? {
+                  file: typeof body.source.file === 'string' ? body.source.file.slice(0, 1024) : undefined,
+                  line: Number.isFinite(Number(body.source.line))
+                    ? Math.max(1, Math.round(Number(body.source.line)))
+                    : undefined,
+                }
+              : undefined;
+          const point =
+            body.point && typeof body.point === 'object'
+              ? { x: Number(body.point.x), y: Number(body.point.y) }
+              : undefined;
+          const result = await service.askFromSelection({
+            sessionId: body.sessionId,
+            project,
+            page: Number(body.page),
+            quote: typeof body.quote === 'string' ? body.quote : '',
+            question: typeof body.question === 'string' ? body.question : undefined,
+            source,
+            point,
+          });
+          sendJson(res, 200, result);
+          return;
+        }
+
+        if (pathname === '/latex/ask-image' && method === 'POST') {
+          const body = await readJsonObject(req, IMAGE_BODY_LIMIT);
+          if (typeof body.sessionId !== 'string' || body.sessionId.trim() === '') {
+            throw new HttpError(400, 'sessionId is required');
+          }
+          let project;
+          if (body.project || body.path) project = await projectFromBody(service, body);
+          const result = await service.askImage({
+            sessionId: body.sessionId,
+            project,
+            page: Number(body.page),
+            question: typeof body.question === 'string' ? body.question : undefined,
+            image: body.image,
+          });
+          sendJson(res, 200, result);
+          return;
+        }
+
+        if (pathname === '/latex/annotation-image' && method === 'GET') {
+          const project = pickProject(service, parsed.searchParams);
+          const id = parsed.searchParams.get('id') ?? '';
+          const info = await service.annotationImage(project, id);
+          res.writeHead(200, {
+            'content-type': info.mediaType,
+            'content-length': String(info.bytes),
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          });
+          const stream = createReadStream(info.path);
+          stream.on('error', () => res.destroy());
+          stream.pipe(res);
+          return;
+        }
+
+        if (pathname === '/latex/ocr' && method === 'GET') {
+          sendJson(res, 200, await service.ocrStatus());
+          return;
+        }
+
+        if (pathname === '/latex/ocr/install' && method === 'POST') {
+          const result = service.startOcrInstall();
+          sendJson(res, result.ok ? 202 : 409, result);
+          return;
+        }
+
+        if (pathname === '/latex/ocr/cancel' && method === 'POST') {
+          sendJson(res, 200, service.cancelOcrInstall());
+          return;
+        }
+
+        if (pathname === '/latex/toolchain' && method === 'GET') {
+          sendJson(res, 200, service.toolchainStatus());
+          return;
+        }
+
+        if (pathname === '/latex/toolchain/install' && method === 'POST') {
+          const body = await readJsonObject(req);
+          const result = service.startToolchainInstall({
+            url: typeof body.url === 'string' ? body.url : undefined,
+            sha256: typeof body.sha256 === 'string' ? body.sha256 : undefined,
+          });
+          sendJson(res, result.ok ? 202 : 409, result);
+          return;
+        }
+
+        if (pathname === '/latex/toolchain/cancel' && method === 'POST') {
+          sendJson(res, 200, service.cancelToolchainInstall());
+          return;
+        }
+
+        if (pathname === '/latex/history' && method === 'GET') {
+          const project = pickProject(service, parsed.searchParams);
+          sendJson(res, 200, await service.history(project));
+          return;
+        }
+
+        if (pathname === '/latex/audit' && method === 'POST') {
+          const body = await readJsonObject(req);
+          const project = await projectFromBody(service, body);
+          const result = await service.audit(
+            project,
+            {
+              against: body.against,
+              from: body.from,
+              to: body.to,
+              maxPages: body.maxPages,
+              dpi: body.dpi,
+              maxImages: body.maxImages,
+            },
+          );
+          if (Array.isArray(result.images)) {
+            result.images = result.images.map((image) => ({
+              ...image,
+              name: path.basename(image.path),
+              url: `/latex/audit-image?project=${encodeURIComponent(project.id)}&name=${encodeURIComponent(
+                path.basename(image.path),
+              )}`,
+            }));
+          }
+          sendJson(res, 200, result);
+          return;
+        }
+
+        if (pathname === '/latex/audit-image' && method === 'GET') {
+          const project = pickProject(service, parsed.searchParams);
+          const info = await service.auditImage(project, parsed.searchParams.get('name') ?? '');
+          res.writeHead(200, {
+            'content-type': info.mediaType,
+            'content-length': String(info.bytes),
+            'cache-control': 'no-store',
+            'x-content-type-options': 'nosniff',
+          });
+          const stream = createReadStream(info.path);
+          stream.on('error', () => res.destroy());
+          stream.pipe(res);
+          return;
+        }
+
+        if (pathname === '/latex/annotations' && method === 'GET') {
+          const project = pickProject(service, parsed.searchParams);
+          const listed = await service.listAnnotations(project);
+          sendJson(res, 200, listed);
+          return;
+        }
+
+        if (pathname === '/latex/annotations' && method === 'POST') {
+          const body = await readJsonObject(req, IMAGE_BODY_LIMIT);
+          const project = await projectFromBody(service, body);
+          const item = await service.createAnnotation(project, body);
+          const listed = await service.listAnnotations(project);
+          sendJson(res, 200, { ok: true, item, annotations: listed });
+          return;
+        }
+
+        if (pathname === '/latex/annotations' && method === 'PATCH') {
+          const body = await readJsonObject(req);
+          const project = await projectFromBody(service, body);
+          const item = await service.updateAnnotation(project, body);
+          const listed = await service.listAnnotations(project);
+          sendJson(res, 200, { ok: true, item, annotations: listed });
+          return;
+        }
+
+        if (pathname === '/latex/annotations' && method === 'DELETE') {
+          const project = pickProject(service, parsed.searchParams);
+          const id = parsed.searchParams.get('id');
+          if (id) {
+            const result = await service.removeAnnotation(project, id);
+            const listed = await service.listAnnotations(project);
+            sendJson(res, 200, { ok: true, ...result, annotations: listed });
+            return;
+          }
+          const all = parsed.searchParams.get('all') === '1';
+          const result = await service.clearAnnotations(project, { all });
+          sendJson(res, 200, { ok: true, ...result });
           return;
         }
 

@@ -14,8 +14,21 @@
 > （`editorAutoSave`、`editorAutoSaveDelayMs`）。这降低了“忘记保存”的风险，但也意味着停顿超过
 > 900 ms 就会触发一次构建；写大文件或频繁停顿时可调大延迟或关闭自动保存。冲突/错误会停止自动循环，
 > 仍需用户重新加载或手动保存。
+>
+> **更新（2026-11-23，v0.4.0）**：新增 `latex_look` 页面渲染/文本锚点/像素 diff，以及预览选区
+> 提问与批注闭环。新增限制：需要本机有 PDF 渲染器（TeX Live 自带 pdftoppm；否则 Ghostscript/muPDF，
+> 都没有时工具返回 `NO_RENDERER`）；扫描版 PDF 没有文本层，只能看图、不能划词；一次只看一页，
+> 没有整本 audit，也没有并排 diff 图；批注按 quote 精确重锚，句子被大改会变 `stale` 而不是悄悄移动；
+> 批注有条目/字节上限。详见下文 §9。
 
-本文件是 `docs/architecture.md` 的补充：架构文档说明**怎么工作**，这里说明**哪里不行、为什么不改、怎么绕**。
+> **更新（2026-11-23，v0.6.0）**：新增多构建 audit 基线/审计面板、学术体检、CodeMirror 编辑器、
+> 一键 TinyTeX、预览目录/搜索/下载/深色模式；新增限制见 §18。
+>
+> **更新（2026-11-23，v0.5.0）**：新增整本 audit/并排图、框选截图提问、可选 OCR、逐条删除与快捷键、
+> 跨进程批注锁与原子渲染。新增限制见 §17（audit 只与一份上一构建比较、OCR 可选且可能不准、
+> 截图批注位置是 best-effort 等）。
+>
+> 本文件是 `docs/architecture.md` 的补充：架构文档说明**怎么工作**，这里说明**哪里不行、为什么不改、怎么绕**。
 所有条目都标了证据来源（源码行号 / 本机文件 / 真实命令返回），没有验证过的一律写
 `NOT VERIFIED (agent-side)`，不臆测。
 
@@ -386,7 +399,7 @@ watcher 的 root 是 `project.rootDir`（`service.js:301`）。若章节文件�
 ### 9.3 没有文本层：不能选中、搜索、复制【中】
 
 viewer 只画 canvas（`client.js:1290-1309`），不渲染 PDF.js 的 text layer。于是：不能搜索、不能选中文字、
-不能复制。双击被用作 SyncTeX 反查（`client.js:1690`），也不承担选词。
+不能复制。`Ctrl`+单击被用作 SyncTeX 反查（`client.js` 的 `revealSourceAt`），双击不承担这个职责。
 
 ### 9.4 每个已渲染页面常驻一张 canvas【低】
 
@@ -399,12 +412,12 @@ viewer 只画 canvas（`client.js:1290-1309`），不渲染 PDF.js 的 text laye
 `client.js:221`、`client.js:1131-1134`。它保存每个项目的页码/缩放，永不清理；项目多时增长很慢，
 但严格说没有淘汰。
 
-### 9.6 前向 SyncTeX 从工作台发起时只查主文件【中】
+### 9.6 前向 SyncTeX 只覆盖项目根内的源文件【低】
 
-`client.js:889-912` 的请求只带 `file = project.mainRelative`（`client.js:895`）与行号。所以：
-在章节文件里写第 200 行、然后从工作台点「定位到 PDF」，synctex 会在 `main.tex` 的第 200 行附近找，
-而不是章节文件。模型用 `latex_synctex` 工具时**可以**传 `file`（`tools.js:442`、`service.js:852-857`），
-不受此限。
+编辑器里 `Ctrl`（macOS 上 `Cmd`）+ 单击触发前向定位：请求带着**当前打开文件**相对项目根的路径与行号，
+所以 `\input` 进来的章节文件也能定位到它自己的位置，不再是「只查主文件」。
+文件若落在项目根目录外，宿主会拒绝这次查询（`service.js` 的 `inside the project root` 守卫），
+编辑器状态行会显示失败原因而不是静默无反应。
 
 ### 9.7 可访问性缺口【低】
 
@@ -419,7 +432,7 @@ viewer 只画 canvas（`client.js:1290-1309`），不渲染 PDF.js 的 text laye
 （`client.js:417-424`），把 `preview.pdf` 交给 DSH 内建文档预览。此时：
 
 - 页码位置、缩放、工具栏、是否刷新，全部由 DSH 决定，插件无法定位到某一页（`page` 参数被忽略）；
-- 没有 SyncTeX 双击反查；
+- 没有 SyncTeX 反查（`Ctrl`+单击与双击都不会触发）；
 - 自动刷新依赖内建预览对同一资源地址的重新读取 —— `NOT VERIFIED (agent-side)`，本任务没有独立验证；
 - 构建失败时的 stale 提示只在插件的 native tab 里有，document 面看不到。
 
@@ -493,7 +506,7 @@ const source = sourceMatch?.[1]?.trim();
 
 1. **路径含空格被截断**：`(.+?)` 非贪婪且允许以空格结尾，`source` 只截到第一个空格之前。
    随后拼成 `<rootDir>/带` 并 `openResource`，打开一个不存在的文件。含空格/中文路径的项目
-   双击反查「跳不过去」。
+   `Ctrl`+单击反查「跳不过去」。
 2. **没有 `(column N)` 时行号丢失**：行号正则要求数字后紧跟空白或 `(`（`client.js:1470`）。
    而 Host 只在 synctex 报 `Column:` 时才追加 ` (column N)`（`service.js:886-892`）——
    一旦某次反查只有 `Line:` 没有 `Column:`，结果串以 `:13` 结尾，行号就取不到，
@@ -506,7 +519,7 @@ const source = sourceMatch?.[1]?.trim();
 
 ### 10.5 坐标换算的单位前提【提示】
 
-双击用 `(clientX - rect.left) / scale`（`client.js:1458-1460`）。这在「canvas CSS 尺寸 = PDF pt × scale」
+`Ctrl`+单击用 `(clientX - rect.left) / scale`。这在「canvas CSS 尺寸 = PDF pt × scale」
 时成立（`renderPage` 里 `canvas.style.width = viewport.width`，`client.js:1301-1306`），并且
 `rect` 是 canvas 自身的 bounding box，所以与容器的 padding/滚动无关。
 但页面 div 有 `overflow:hidden` 与 `border-radius:1px`（`client.js:633`），Canvas 放大到非整数 CSS 尺寸时
@@ -599,7 +612,7 @@ argv 传参不经 shell，所以空格安全；风险集中在：SyncTeX 的 `In
 | 内建文档预览（`previewSurface: 'document'`）的页码位置、刷新时机、失败提示 | 由 DSH 控制，插件侧无 API | Lead / client-review |
 | 取消/超时后「latexmk → tlperl → 引擎」进程树是否零残留 | 依赖 Host subprocess 实现，agent 侧无法在构建瞬间抓进程 | acceptance 的 F 组 |
 | CJK / 空格路径下 synctex CLI 的 `Input:` 输出编码与内容 | 需真实调用并看原始 stdout | `docs/synctex-notes.md` |
-| 双击反查在带空格项目上的实际失败表现 | 同上 + 前端行为 | synctex + client-review |
+| `Ctrl`+单击反查在带空格项目上的实际失败表现 | 同上 + 前端行为 | synctex + client-review |
 | 浏览器内存随长文档/多项目的真实占用 | 需要 DevTools 采样 | client-review / Lead |
 | 重启 DSH 后工具仍在、preview 版本仍在 | 本任务不允许重启 | acceptance |
 | 键盘可达性、焦点顺序 | 需要真人/自动化 UI 检查 | Lead |
@@ -611,7 +624,7 @@ argv 传参不经 shell，所以空格安全；风险集中在：SyncTeX 的 `In
 ## 15. 建议的修复优先级（仅建议，本任务不改源码）
 
 1. **§4 队列合并丢弃非 auto job**（会静默挂起工具/HTTP 请求）——最高优先级；
-2. **§10.4 反查路径含空格被截断**（双击反查在中文/空格项目直接失效）——返回结构化结果最稳；
+2. **§10.4 反查路径含空格被截断**（`Ctrl`+单击反查在中文/空格项目直接失效）——返回结构化结果最稳；
 3. **§3.2 取消在等信号量窗口无效**（用户看到「已取消」但构建继续）——把 `abortController` 提前到 `#runOne` 开头创建；
 4. **§3.5 clean 与构建互斥**（构建中清理会制造假失败）——复用项目队列或加 `building` 检查；
 5. **§8.2 SSE 按会话过滤**（所有连接看到全部项目路径）；
@@ -621,3 +634,177 @@ argv 传参不经 shell，所以空格安全；风险集中在：SyncTeX 的 `In
 
 以上每一项都对应 `docs/review-host.md`、`docs/review-client.md`、`docs/security-audit.md` 或
 `docs/synctex-notes.md` 中的独立复核；本文件只负责把它们如实登记，不修改任何源码或 profile。
+
+---
+
+## 16. v0.4.0 新增能力（agent 看图 / 预览上下文）
+
+### 16.1 页面渲染与文本锚点
+
+- **渲染器依赖**：`latex_look` 需要 `pdftoppm`/`pdftotext`/`pdfinfo`。TeX Live 自带（本机 Poppler
+  25.02 实测），但精简发行版可能没有；备选是 Ghostscript（`gswin64c`/`gs`）或 muPDF。都没有时工具
+  返回 `NO_RENDERER` 并给出原因，不会崩溃，也不会伪造图片。
+- **crop 只在 pdftoppm 下生效**：Ghostscript/muPDF 渲染整页，返回 `cropApplied:false`；归一化
+  crop 依赖 `pdfinfo` 的首页尺寸，混合页尺寸文档的 crop 只是近似。
+- **一次一页**：没有整本 `audit`，也没有并排 diff 图；diff 只回变化像素数、比例与包围盒。整本扫描
+  需要模型多次调用，按页计费/计时。
+- **图片成本**：默认 120 dpi，A4 约 993×1404；图片作为 image block 进模型上下文。`lookMaxPixels`
+  只限制 diff，不限制发送尺寸；需要更小图时用 `crop` 或更低 `dpi`。
+- **缓存**：以 PDF 字节的 SHA-256 分目录，保留 `lookCacheKeep`（默认 2）个构建；`latex_clean
+  includePreview` 或手工删 `build/` 会一并清掉渲染。PDF >256 MiB 时不做哈希，返回 `HASH_FAILED`。
+- **文本锚点**：依赖 PDF 文本层。扫描版 PDF 抽不出字，`text` 锚点失败（仍可按 `page` 看图）；
+  `quote` 最少 4 个字符；匹配前做 NFKC 与空白归一化，跨行/连字符有回退匹配，但旋转页面、
+  OCR 文本层与艺术字仍可能对不上。CJK 已在 e2e 中用 Poppler 验证。
+- **页码纠偏**：`text` 锚点直接搜索整本文本，不依赖 SyncTeX 记录的构建页；`point`/`text` 框中心
+  再走 SyncTeX inverse。旋转页或非均匀变换的框中心只是近似，返回 `approximate` 仅标记页中心兜底。
+
+### 16.2 预览选区、提问与批注
+
+- **TextLayer 是手写 span**：位置来自 `pdfjs.Util.transform`，字体用通用 `sans-serif`，没有按
+  PDF 字体度量做横向缩放。选取高亮可能比字形略宽/略窄；跨行选择按 `getClientRects` 取矩形，
+  最多 20 个。公式、连字、竖排文本的选择结果可能带换行或空格差异，提问/批注按原文保存。
+- **没有 OCR/框选截图**：扫描件只能看图；提问与批注都基于选中的文字。选区工具条也没有键盘快捷键。
+- **提问需要 Host 会话服务**：走 `ctx.get('sessionController').prompt()`；宿主没有该服务、会话 id
+  非法或 120 s 内未接纳时，客户端降级为复制选区。消息是普通用户消息（纯文本），不附页面截图。
+- **批注锚点是归一化矩形**：页面尺寸变化（改纸张、换 dpi）后高亮位置会有偏差；重建后优先按
+  `quote` 重锚并更新 `rects`，找不到就标 `stale`。用户大改句子后旧批注不会自动跟随。
+- **上限**：默认每项目 200 条、磁盘 JSON 256 KiB；超过后创建返回 `ANNOTATIONS_LIMIT/TOO_LARGE`。
+  写入是单 Host 进程内串行 + 原子替换；两个 DSH 进程同时写同一项目不在保证范围内。
+- **没有逐条删除 UI**：面板只提供“清除已解决”；开放批注由 agent `resolve`。`includePreview`
+  清理会删除该项目全部批注（含 open）。
+- **无多人/权限模型**：批注没有作者、可见性或审批流；单人本地使用。
+
+### 16.3 未验证项
+
+- macOS 的 Ghostscript 名称/路径分支（代码有，未真机验证）；Linux 由 CI e2e 覆盖。
+- 旧版 Host（无 `sessionController`/`attachments`）下的降级路径只做了单元测试，未在真实旧版宿主跑过。
+- 浏览器 TextLayer 在旋转页、CJK 字体未内嵌、超长单行等场景的选取精度未做截图级验收。
+- 多窗口同时打开同一项目时，批注/预览的并发写只保证单进程内串行。
+
+---
+
+## 17. v0.5.0 新增能力（audit / 截图 / OCR / 删除）
+
+### 17.1 整本 audit
+
+- **只与一份上一构建比较**：插件只保留 `previous-<fingerprint>.pdf`，更早的历史不可比；
+  `latex_clean includePreview` 会删掉它。想看更早版本需要自己另存 PDF。
+- **预算硬上限**：`auditMaxPages`（默认 30，最高 60）、`auditMaxImages`（默认 3，最高 5）、
+  `auditDpi`（默认 100）。超出页数只审计前 N 页并在结果里标 `truncated`；
+  其余变化页只有文本摘要，没有并排图。
+- **并排图是裁剪图**：按变化包围盒 +20px 边距裁剪，不是整页并排；页面尺寸变化
+  （换纸张/dpi）时 `composeSideBySide` 返回 `size-changed`，该页只有文字摘要。
+- **新增/删除页**：新构建多出的页按 `added` 列出（左侧留白合成），旧构建多出的页按
+  `removed` 列出（最多 20 条）；页数统计依赖 `pdfinfo`，缺 pdfinfo 时 audit 返回
+  `PAGE_COUNT_UNKNOWN`/`PREVIOUS_PAGE_COUNT_UNKNOWN`。
+- **自动编译会"吃掉"对比基线**：audit 只比较 `previousPath` 与当前预览。如果保存源码触发了
+  watcher 的自动构建，`previousPath` 会被这次中间构建替换，紧接着的 audit 可能报
+  "byte-identical / nothing changed"。要看某次编辑的 diff，先关掉自动编译（`autoBuild:false`）
+  或在这一编辑后立刻手动编译再 audit。
+- **成本**：首次 audit 要渲染新旧两套页面（30 页约十几秒）并生成图片；之后靠缓存。
+  审计不改变 Host 的构建队列，但会占用渲染超时预算。
+
+### 17.2 截图提问与 OCR
+
+- **截图来自浏览器 canvas**：框选区域按当前缩放/DPR 裁切，长边上限 1600px；页面未渲染到
+  该区域时截不到（滚动到可见再框）。截图不写入项目文件，只随提问进会话。
+- **图片消息是纯文本+图片**：没有版面结构、没有 PDF 链接；模型看到的是光栅图。
+- **OCR 是可选增强**：只有本机探测到 `tesseract` 才运行，语言由 `ocrLanguages` 决定
+  （默认 `eng`；中文需 `chi_sim` 语言包）。OCR 文本可能错行、错字，代码只把它作为
+  "可能不准确"的线索附在消息里，不参与批注重锚。
+- **无 OCR 时**：截图仍可提问/保存批注，`ocrText` 为空；不会阻塞，也不会报错。
+- **大小上限**：`askImageMaxBytes`（默认 8 MiB）与 `annotationImageMaxBytes`（默认 5 MiB）；
+  超出时客户端提示"截图过大"，服务端返回 400 `BAD_IMAGE`。
+
+### 17.3 批注图片与删除
+
+- **图片批注的锚点是 best-effort**：没有 quote 的截图批注在重建后保持 open，但只保留
+  归一化页矩形，不随版面重排移动；面板/工具会显示 `reanchorNote`。有 quote 的图片批注
+  仍优先按 quote 重锚。
+- **删除**：逐条删除会同时删截图；`clear resolved`/`includePreview` 也会清理对应截图。
+  删除不可撤销（没有回收站）。
+- **锁的边界**：跨进程锁只覆盖本插件的读改写；用户手工编辑 JSON 或其它工具写同一文件
+  不受保护。等待超时会返回可重试的 503，而不是无锁写入。
+- **多窗口**：同一 Host 的多个窗口共享进程内队列；两个 DSH 进程共享项目目录时靠锁串行，
+  但长时间占用会触发 503。
+
+### 17.4 未验证项
+
+- macOS 的 `tesseract` 路径/语言包与 Ghostscript 分支（代码有，未真机验证）。
+- Windows 中文 OCR 语言包安装形态（本机未安装 Tesseract；CI 用 Ubuntu 包验证）。
+- 旋转页/非均匀缩放下框选裁剪与源码行的精度（常规页面已在 e2e 验证）。
+- 两个 DSH 进程同时 audit + 渲染同一项目时的缓存竞争（渲染已原子替换，但只做了同页
+  并发渲染测试，没有做 audit 与 look 同时运行的长时间压测）。
+
+## 18. v0.6.0 limitations
+
+### 18.1 Audit history / baselines
+
+- History keeps **five** successful builds and one retained `previous` PDF.
+  Older baselines disappear; auditing a version that is no longer in the index
+  returns a baseline error instead of guessing.
+- Only the current published PDF is compared with **one** baseline. There is no
+  multi-build timeline, no per-hunk attribution, and no three-way merge.
+- The default baseline is the newest manual/editor build. If all earlier builds
+  were auto-builds it falls back to the retained previous preview and labels it
+  as such; the result may then be the "auto-build consumed the baseline" case.
+- The Audit panel runs the same bounded audit as the tool (30 pages/100 dpi/
+  3 images by default); a very large document still needs `from`/`to` windows.
+
+### 18.2 Paper checks
+
+- `stripComments` handles TeX comments but does **not** understand verbatim,
+  `lstlisting`, `\verb` or catcode changes; citation keys inside those regions
+  can be misread. It is a linter, not a TeX parser.
+- BibTeX parsing covers common entry syntax; exotic macros, `@string`
+  expansion and BibLaTeX-only edge cases are not fully modelled.
+- Layout findings from the `.log` carry no source file (the log itself has no
+  reliable path for box warnings); diagnostics-sourced findings do.
+- `latex_bib_fill` needs network access to Crossref, has no API key, and is
+  dry-run only by design. It matches by the supplied key (or returns fields for
+  manual use) and never edits files.
+- The local OCR install needs Python 3 and network access to PyPI (about
+  150 MB); the wheel includes the PP-OCR models. On machines without `uv`, pip
+  is used and can be slower. OCR quality depends on the screenshot resolution
+  and the PP-OCR/Tesseract model; it is a hint, not a source of truth.
+
+### 18.3 Editor
+
+- CodeMirror is a vendored bundle, not a runtime npm dependency; rebuilding it
+  requires the one-time dev command documented in `docs/architecture.md` and
+  bumps the bundle hash. There is no collaborative editing, multi-cursor
+  plugin ecosystem or language server.
+- Drafts live in `sessionStorage`: they survive tab close/reopen in the same
+  tab session, not a browser restart and not another device. Reopening in a
+  different tab does not see another tab's draft.
+- External-change detection runs on window focus (and shows a banner only when
+  the buffer is dirty); a background change while the tab stays focused is
+  noticed on the next focus or reload.
+- The dark preview is a CSS invert filter; colored images/figures are inverted
+  too. Audit composites and screenshots stay in their source colors.
+
+### 18.4 TinyTeX bootstrap
+
+- One-click install is **Windows-only** and downloads the official
+  `TinyTeX-1-windows.exe` (~74 MB). macOS/Linux users must install TeX
+  manually and set `texBinDir`.
+- The `.exe` is executed from `installDir/tmp` with `-y`; the plugin trusts the
+  official host/asset (HTTPS + optional SHA-256). Pin `toolchainSha256` for a
+  fully reproducible install. A custom `toolchainUrl` is honoured but the
+  plugin cannot verify the publisher.
+- The downloaded distribution is TinyTeX-1 (about 100 packages): uncommon
+  packages, CJK fonts or full scheme coverage may still need `tlmgr install`.
+  The installer does not modify PATH or the registry; a managed tree is
+  selected through `texBinDir` for this plugin only.
+- Progress is polled (about 1.2 s), not a byte-level SSE stream; a very slow
+  network may look idle between polls.
+
+### 18.5 Platform / CI
+
+- Windows 11 is the verified path. The Ubuntu e2e CI job is green. macOS gets a
+  mandatory unit-test job and a **best-effort** BasicTeX e2e job
+  (`continue-on-error`); BasicTeX package coverage and runner cask installs may
+  fail, and macOS UI automation is not run in CI.
+- There is still no macOS UI automation; the native PDF preview, CodeMirror
+  focus behavior and drag/marquee interactions are manually verified on
+  Windows only.

@@ -17,3 +17,6 @@ Thumbs.db
 .vscode/
 .idea/
 .dsh-ops-update-*.lock
+
+# Local DSH session/grill state
+.dsh/

@@ -12,7 +12,7 @@
  *  - the previous preview survives a failed build because publication happens
  *    only after a successful, diagnostic-clean build.
  */
-import { mkdir, readdir, readFile, stat, unlink } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseBibLog, parseLatexLog } from './logparse.js';
@@ -281,6 +281,12 @@ export class LatexBuilder {
       pdfPath: path.join(buildDirAbs, `${stem}.pdf`),
       logPath: path.join(buildDirAbs, `${stem}.log`),
       previewPath: path.join(stateDir, `preview-${fingerprint}.pdf`),
+      // The previous successful preview is retained so `latex_audit` can
+      // render the same page from the old build and compare it without keeping
+      // a full history of PDFs.
+      previousPath: path.join(stateDir, `previous-${fingerprint}.pdf`),
+      historyDir: path.join(stateDir, 'history'),
+      historyIndexPath: path.join(stateDir, 'history', 'index.json'),
       metaPath: path.join(stateDir, `last-build-${fingerprint}.json`),
       stem,
       fingerprint,
@@ -487,6 +493,14 @@ export class LatexBuilder {
 
     let version;
     let previewPath;
+    if (status === 'success') {
+      // Keep one generation of the published preview for the audit diff before
+      // it is replaced. A missing previous preview is normal on the first build.
+      const priorPreview = await stat(paths.previewPath).catch(() => undefined);
+      if (priorPreview?.isFile() && priorPreview.size > 0) {
+        await atomicCopy(paths.previewPath, paths.previousPath).catch(() => {});
+      }
+    }
     if (status === 'success' && this.config.preserveLastGood) {
       await atomicCopy(pdfFound, paths.previewPath);
       version = Date.now();
@@ -527,6 +541,23 @@ export class LatexBuilder {
           null,
           2,
         ),
+      );
+    }
+
+    if (status === 'success' && version) {
+      await this.#recordBuildHistory(
+        paths,
+        {
+          version,
+          builtAt: new Date().toISOString(),
+          reason: typeof options.reason === 'string' ? options.reason : 'manual',
+          engine,
+          pages: parsed.pages,
+          durationMs,
+          manual: options.reason !== 'auto',
+          mainFile: project.mainFile,
+        },
+        pdfFound,
       );
     }
 
@@ -691,6 +722,45 @@ export class LatexBuilder {
    * @param {{ paths: object }} project
    * @param {{ includePdf?: boolean, includePreview?: boolean }} options
    */
+  /**
+   * Keep a small build history next to the published preview.
+   *
+   * The history is best-effort: a failed archive must never fail a successful
+   * build. Each entry keeps the PDF, reason, engine and page count so
+   * `latex_audit` can compare against an explicit earlier build (for example
+   * the last manual build instead of an auto-build).
+   */
+  async #recordBuildHistory(paths, entry, pdfPath) {
+    try {
+      await mkdir(paths.historyDir, { recursive: true });
+      let index = { schema: 1, entries: [] };
+      try {
+        const raw = await readFile(paths.historyIndexPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.entries)) index = { schema: 1, entries: parsed.entries };
+      } catch {
+        // No history yet (or a corrupt one); start clean.
+      }
+      const filename = `build-${entry.version}.pdf`;
+      await atomicCopy(pdfPath, path.join(paths.historyDir, filename));
+      const entries = [
+        { ...entry, pdf: filename },
+        ...index.entries.filter((item) => item.version !== entry.version),
+      ].slice(0, 5);
+      await atomicWriteText(
+        paths.historyIndexPath,
+        JSON.stringify({ schema: 1, entries }, null, 2),
+      );
+      const keep = new Set(entries.map((item) => item.pdf));
+      for (const old of index.entries) {
+        if (!old?.pdf || keep.has(old.pdf)) continue;
+        await unlink(path.join(paths.historyDir, path.basename(old.pdf))).catch(() => {});
+      }
+    } catch (error) {
+      this.logger.warn('LaTeX build history could not be recorded: %s', errorMessage(error));
+    }
+  }
+
   async clean(project, options = {}) {
     const removed = [];
     const kept = [];
@@ -733,7 +803,8 @@ export class LatexBuilder {
       }
     }
     if (options.includePreview === true) {
-      for (const file of [project.paths.previewPath, project.paths.metaPath]) {
+      await rm(project.paths.historyDir, { recursive: true, force: true }).catch(() => {});
+      for (const file of [project.paths.previewPath, project.paths.previousPath, project.paths.metaPath]) {
         try {
           await unlink(file);
           removed.push(file);
